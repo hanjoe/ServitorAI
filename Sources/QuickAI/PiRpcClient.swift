@@ -19,6 +19,10 @@ final class PiRpcClient {
     private let readerQueue = DispatchQueue(label: "quickai.rpc.reader")
     private var nextCommandId = 0
     private var pending: [String: (Result<[String: Any], Error>) -> Void] = [:]
+    /// Guards `pending` + `nextCommandId` (touched from reader thread and main).
+    private let lock = NSLock()
+
+    private static let modelFailureHint = "model request failed — paste a real OLLAMA_API_KEY into ~/.config/servitorai/config.json or switch model with ⌘M"
 
     private(set) var sessionFile: String?
     private(set) var sessionId: String?
@@ -55,7 +59,7 @@ final class PiRpcClient {
         process.environment = env
         process.standardInput = writePipe
         process.standardOutput = readPipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = Self.stderrLogFile()
         process.terminationHandler = { [weak self] proc in
             guard let self else { return }
             let code = proc.terminationStatus
@@ -110,21 +114,52 @@ final class PiRpcClient {
 
         switch type {
         case "response":
-            if let id = obj["id"] as? String, let cb = pending.removeValue(forKey: id) {
-                if obj["success"] as? Bool == true {
-                    cb(.success(obj))
-                } else {
-                    let err = obj["error"] as? String ?? "command failed"
-                    cb(.failure(NSError(domain: "QuickAI.rpc", code: 1, userInfo: [NSLocalizedDescriptionKey: err])))
+            if let id = obj["id"] as? String {
+                lock.lock()
+                let cb = pending.removeValue(forKey: id)
+                lock.unlock()
+                if let cb {
+                    if obj["success"] as? Bool == true {
+                        cb(.success(obj))
+                    } else {
+                        let err = obj["error"] as? String ?? "command failed"
+                        cb(.failure(NSError(domain: "QuickAI.rpc", code: 1, userInfo: [NSLocalizedDescriptionKey: err])))
+                    }
                 }
             }
         case "message_update":
-            if let ev = obj["assistantMessageEvent"] as? [String: Any],
-               ev["type"] as? String == "text_delta",
-               let delta = ev["delta"] as? String {
+            if let ev = obj["assistantMessageEvent"] as? [String: Any] {
+                let evType = ev["type"] as? String
+                if evType == "text_delta", let delta = ev["delta"] as? String {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.delegate?.piClient(self, didEmitText: delta)
+                    }
+                }
+                if evType == "error", let err = (ev["error"] as? String) ?? (ev["reason"] as? String) {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.delegate?.piClient(self, didFail: "stream error: \(err)")
+                    }
+                }
+            }
+        case "message_end":
+            // Provider failures arrive as an empty assistant message with
+            // stopReason "error" — surface them instead of spinning forever.
+            if let m = obj["message"] as? [String: Any],
+               m["role"] as? String == "assistant",
+               m["stopReason"] as? String == "error" {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    self.delegate?.piClient(self, didEmitText: delta)
+                    self.delegate?.piClient(self, didFail: Self.modelFailureHint)
+                }
+            }
+        case "auto_retry_end":
+            if obj["success"] as? Bool == false {
+                let err = obj["finalError"] as? String ?? Self.modelFailureHint
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.delegate?.piClient(self, didFail: err)
                 }
             }
         case "agent_settled":
@@ -137,14 +172,30 @@ final class PiRpcClient {
         }
     }
 
+    /// pi's stderr goes to a log file for post-mortem diagnosis.
+    private static func stderrLogFile() -> FileHandle {
+        let url = Paths.configDir.appendingPathComponent("pi.log")
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: nil)
+        }
+        if let h = FileHandle(forWritingAtPath: url.path) {
+            h.seekToEndOfFile()
+            return h
+        }
+        return FileHandle.nullDevice
+    }
+
     // MARK: - Commands
 
     private func send(_ command: [String: Any], completion: ((Result<[String: Any], Error>) -> Void)? = nil) {
+        lock.lock()
         nextCommandId += 1
         let id = "c\(nextCommandId)"
-        var cmd = command
-        cmd["id"] = id
         if let completion { pending[id] = completion }
+        lock.unlock()
+        var cmd = command
         var data = (try? JSONSerialization.data(withJSONObject: cmd)) ?? Data()
         data.append(0x0A)
         writePipe.fileHandleForWriting.write(data)

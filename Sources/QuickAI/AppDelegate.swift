@@ -28,11 +28,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         buildKeyMonitor()
         resolveInitialModelIndex()
         startRpc()
+        warnIfKeyMissing()
     }
 
     private func resolveInitialModelIndex() {
         if let idx = config.models.firstIndex(where: { $0.modelId == config.model && $0.provider == config.provider }) {
             currentModelIndex = idx
+        }
+    }
+
+    /// Warn up front when the default provider cannot authenticate (e.g. the
+    /// config still has the placeholder key), so failure is visible before
+    /// the first prompt instead of a silent spinner.
+    private func warnIfKeyMissing() {
+        guard config.provider == "ollama-cloud" else { return }
+        let fromEnv = ProcessInfo.processInfo.environment["OLLAMA_API_KEY"]
+        let effective = fromEnv ?? config.env?["OLLAMA_API_KEY"]
+        if effective == nil || effective == "PASTE_YOUR_KEY_HERE" {
+            panel.showNotice("⚠ OLLAMA_API_KEY is missing or still the placeholder — DeepSeek will fail. Paste your key into ~/.config/servitorai/config.json, or press ⌘M and pick Claude Haiku (no key needed).")
         }
     }
 
@@ -81,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel.isVisible else { return event }
             if event.keyCode == 53 { // Esc
-                if self.isStreaming { self.rpc.abort() } else { self.panel.hide() }
+                self.cancelOrAbort()
                 return nil
             }
             let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -300,6 +313,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         }
     }
 
+    /// Esc: abort an in-flight answer (with visible feedback), or hide the panel.
+    private func cancelOrAbort() {
+        if isStreaming {
+            isStreaming = false
+            panel.setBusy(false)
+            if !currentAssistantText.isEmpty {
+                messages.append(ChatMessage(role: "assistant", text: currentAssistantText))
+            }
+            currentAssistantText = ""
+            panel.appendRawAssistant("\n[aborted]\n")
+            panel.finishAssistant()
+            rpc.abort()
+        } else {
+            panel.hide()
+        }
+    }
+
     // MARK: - ChatPanelDelegate
 
     func chatPanel(_ panel: ChatPanel, didSubmit text: String) {
@@ -318,7 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     func chatPanelDidRequestCancel(_ panel: ChatPanel) {
-        if isStreaming { rpc.abort() } else { panel.hide() }
+        cancelOrAbort()
     }
 
     func chatPanelDidRequestNewChat(_ panel: ChatPanel) {
@@ -350,6 +380,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
             isStreaming = false
             panel.appendRawAssistant("\n[error: \(error)]\n")
             panel.finishAssistant()
+            if !currentAssistantText.isEmpty {
+                messages.append(ChatMessage(role: "assistant", text: currentAssistantText))
+            }
+            currentAssistantText = ""
         }
         if error.contains("exited") {
             scheduleRpcRestart()

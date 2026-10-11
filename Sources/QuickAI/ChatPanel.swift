@@ -288,6 +288,15 @@ final class ChatPanel: NSObject, NSTextFieldDelegate {
         emptyStateView.isHidden = false
     }
 
+    /// Show a plain notice line (hides the empty-state overlay).
+    func showNotice(_ text: String) {
+        emptyStateView.isHidden = true
+        outputView.textStorage?.append(NSAttributedString(string: text + "\n\n", attributes: [
+            .font: T.bodyFont, .foregroundColor: T.warning
+        ]))
+        scrollToBottom()
+    }
+
     func render(messages: [ChatMessage]) {
         emptyStateView.isHidden = !messages.isEmpty
         let s = NSMutableAttributedString()
