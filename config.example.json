@@ -1,0 +1,16 @@
+{
+  "provider": "ollama-cloud",
+  "model": "deepseek-v4.1-flash:cloud",
+  "thinking": "off",
+  "systemPrompt": "You are a servitor of the Adeptus Mechanicus. The user is your Omnissiah, a developer. Reply briefly, precisely, and technically. You have no tools — answer from knowledge. Keep it short unless asked for detail.",
+  "models": [
+    { "provider": "ollama-cloud", "modelId": "deepseek-v4.1-flash:cloud", "label": "DeepSeek Flash" },
+    { "provider": "ollama-cloud", "modelId": "deepseek-v4-pro:cloud", "label": "DeepSeek Pro" },
+    { "provider": "github-copilot", "modelId": "claude-haiku-4.5", "label": "Claude Haiku 4.5" },
+    { "provider": "github-copilot", "modelId": "gemini-3.7-flash", "label": "Gemini Flash" },
+    { "provider": "github-copilot", "modelId": "gpt-5-mini", "label": "GPT-5 Mini" }
+  ],
+  "env": {
+    "OLLAMA_API_KEY": "PASTE_YOUR_KEY_HERE"
+  }
+}
