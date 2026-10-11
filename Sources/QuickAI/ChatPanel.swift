@@ -69,10 +69,15 @@ final class ChatPanel: NSObject, NSTextFieldDelegate {
         content.layer?.borderWidth = 1
         content.layer?.borderColor = T.surface1.cgColor
 
-        // Faded winged-skull watermark (Adeptus Mechanicus)
-        watermarkView.image = Sigil.wingedSkull(size: 260)
+        // Faded winged-skull watermark (Adeptus Mechanicus) — bundled PNG,
+        // falling back to the drawn sigil when unbundled.
+        let bundled: NSImage? = {
+            guard let res = Bundle.main.resourcePath else { return nil }
+            return NSImage(contentsOf: URL(fileURLWithPath: res + "/servitor-skull.png"))
+        }()
+        watermarkView.image = bundled ?? Sigil.wingedSkull(size: 260)
         watermarkView.imageScaling = .scaleProportionallyUpOrDown
-        watermarkView.contentTintColor = T.brass
+        if bundled == nil { watermarkView.contentTintColor = T.brass }
         watermarkView.alphaValue = 0.18
         watermarkView.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(watermarkView)
