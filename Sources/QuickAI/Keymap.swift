@@ -42,7 +42,7 @@ final class Keymap {
     private static var defaults: [AppAction: KeyBinding] {
         [
             .actionsMenu: ctrl("k"),
-            .settings: ctrl(","),
+            .settings: KeyBinding(key: ",", modifiers: NSEvent.ModifierFlags.command.rawValue),
             .copyAnswer: ctrl("c"),
             .copyCode: ctrl("c", [.option]),
             .pasteAnswer: ctrl("\r"),

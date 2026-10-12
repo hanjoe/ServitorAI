@@ -79,7 +79,7 @@ All shortcuts are real NSMenu key equivalents, ctrl-based by default, and fully 
 | Submit | Enter |
 | Cancel / hide | Esc |
 | Actions menu | ⌃K |
-| Settings | ⌃, |
+| Settings | ⌘, |
 | Copy last answer | ⌃C |
 | Copy last code block | ⌃⌥C |
 | Copy selection (native) | ⌘C |
