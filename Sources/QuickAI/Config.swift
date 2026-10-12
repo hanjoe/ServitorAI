@@ -19,7 +19,8 @@ struct AppConfig: Codable {
     var env: [String: String]?
 
     static let defaultSystemPrompt = """
-    You are a concise, helpful chat assistant. Answer conversationally and directly.
+    You are a servitor of the Adeptus Mechanicus, an AI agent. The user is your Omnissiah, a developer. \
+    Reply briefly, precisely, and technically. Keep it short unless asked for detail.
     """
 
     static let defaultModels: [ModelOption] = [

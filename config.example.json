@@ -2,7 +2,7 @@
   "provider": "ollama-cloud",
   "model": "deepseek-v4.1-flash:cloud",
   "thinking": "off",
-  "systemPrompt": "You are a concise, helpful chat assistant. Answer conversationally and directly.",
+  "systemPrompt": "You are a servitor of the Adeptus Mechanicus, an AI agent. The user is your Omnissiah, a developer. Reply briefly, precisely, and technically. Keep it short unless asked for detail.",
   "models": [
     { "provider": "ollama-cloud", "modelId": "deepseek-v4.1-flash:cloud", "label": "DeepSeek Flash" },
     { "provider": "ollama-cloud", "modelId": "deepseek-v4-pro:cloud", "label": "DeepSeek Pro" },
