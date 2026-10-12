@@ -931,4 +931,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     func piClient(_ client: PiRpcClient, didUpdateSession file: String?, id: String?, name: String?) {}
+
+    func piClient(_ client: PiRpcClient, toolDidFail name: String, message: String) {
+        guard let approved = approvedSearchExtension, name == approved.toolName else { return }
+        panel.showNotice("⚠ Web search failed: \(message)")
+    }
 }
