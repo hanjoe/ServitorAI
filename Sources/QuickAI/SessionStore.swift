@@ -39,18 +39,32 @@ final class SessionStore {
         return try? JSONDecoder().decode(SessionMeta.self, from: data)
     }
 
-    /// Most recent sessions first, excluding `excludeId`.
+    /// Most recent sessions first, excluding `excludeId`. Orders by file
+    /// modification date and decodes only until `limit` sessions are found,
+    /// instead of parsing every saved transcript each time a menu opens.
     static func recent(limit: Int, excludeId: String?) -> [SessionMeta] {
         let fm = FileManager.default
-        let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let suffix = ".qai.json"
+        let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+            .filter { $0.lastPathComponent.hasSuffix(suffix) }
+            .map { url -> (url: URL, date: Date) in
+                let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return (url, date)
+            }
+            .sorted { $0.date > $1.date }
         var metas: [SessionMeta] = []
-        for f in files where f.pathExtension == "json" && f.lastPathComponent.hasSuffix(".qai.json") {
-            guard let data = try? Data(contentsOf: f),
+        for f in files {
+            if metas.count >= limit { break }
+            // The file name is the chat id, so the excluded chat is skipped
+            // without decoding it.
+            let name = f.url.lastPathComponent
+            if let excludeId, name == excludeId + suffix { continue }
+            guard let data = try? Data(contentsOf: f.url),
                   let meta = try? JSONDecoder().decode(SessionMeta.self, from: data) else { continue }
             if let excludeId, meta.id == excludeId { continue }
             metas.append(meta)
         }
         metas.sort { $0.updated > $1.updated }
-        return Array(metas.prefix(limit))
+        return metas
     }
 }

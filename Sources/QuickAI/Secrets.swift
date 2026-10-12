@@ -5,32 +5,40 @@ import Foundation
 /// logs, or the pasteboard. Only the child pi process receives them.
 enum Secrets {
     /// Resolves config env values. Entries starting with `pass://` are looked
-    /// up via pass-cli; everything else passes through unchanged.
-    /// Returns resolved values plus the names of keys that failed.
+    /// up via pass-cli (in parallel, so N references cost one timeout, not N);
+    /// everything else passes through unchanged. Blocking — call it off the
+    /// main thread. Returns resolved values plus the names of keys that failed.
     static func resolve(_ env: [String: String]) -> (values: [String: String], passKeys: Set<String>, failed: [String]) {
-        var values: [String: String] = [:]
+        var values = env.filter { !$0.value.hasPrefix("pass://") }
+        let refs = env.filter { $0.value.hasPrefix("pass://") }.sorted { $0.key < $1.key }
+        var fetched = [String?](repeating: nil, count: refs.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: refs.count) { i in
+            let result = fetch(uri: refs[i].value)
+            lock.lock()
+            fetched[i] = result
+            lock.unlock()
+        }
         var passKeys: Set<String> = []
         var failed: [String] = []
-        for (key, value) in env {
-            guard value.hasPrefix("pass://") else {
-                values[key] = value
-                continue
-            }
-            if let resolved = fetch(uri: value) {
-                values[key] = resolved
-                passKeys.insert(key)
+        for (i, ref) in refs.enumerated() {
+            if let resolved = fetched[i] {
+                values[ref.key] = resolved
+                passKeys.insert(ref.key)
             } else {
-                failed.append(key)
+                failed.append(ref.key)
             }
         }
-        Debug.log("secrets: resolved \(passKeys.count)/\(passKeys.count + failed.count) pass reference(s)" + (failed.isEmpty ? "" : " failed: \(failed.joined(separator: ", "))"))
+        Debug.log("secrets: resolved \(passKeys.count)/\(refs.count) pass reference(s)" + (failed.isEmpty ? "" : " failed: \(failed.joined(separator: ", "))"))
         return (values, passKeys, failed)
     }
 
     private static func passCLIPath() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         // GUI-launched apps have launchd's PATH — check known absolute paths.
-        for candidate in ["\(home)/.local/bin/pass-cli", "/opt/homebrew/bin/pass-cli", "/usr/local/bin/pass-cli"] {
+        // System-managed locations first; the user-writable ~/.local/bin last, so
+        // a planted binary there can't shadow the real CLI and capture secrets.
+        for candidate in ["/opt/homebrew/bin/pass-cli", "/usr/local/bin/pass-cli", "\(home)/.local/bin/pass-cli"] {
             if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
         }
         return nil

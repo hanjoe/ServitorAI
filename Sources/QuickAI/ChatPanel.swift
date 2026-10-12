@@ -64,6 +64,12 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
 
     private var items: [Item] = []
     private var rebuildScheduled = false
+    /// Set when a structural change (not just streamed text) is waiting for the
+    /// next scheduled rebuild, so it can't be downgraded to a tail-only update.
+    private var fullRebuildPending = false
+    /// Offset in the text storage where the in-flight assistant item begins.
+    /// While streaming, only the text from here on is re-rendered.
+    private var streamTailStart: Int?
     private var layoutWidth: CGFloat = 0
     private var toastToken = 0
     private var searchingTranscript = false
@@ -429,13 +435,15 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
     }
 
     func appendRawAssistant(_ delta: String) {
+        var tailOnly = true
         if let last = items.last, last.kind == .assistant, !last.done {
             last.text += delta
         } else {
             items.append(Item(.assistant, delta, done: false))
+            tailOnly = false   // a new item changes the transcript structure
         }
         emptyStateView.isHidden = true
-        scheduleRebuild()
+        scheduleRebuild(tailOnly: tailOnly)
     }
 
     func finishAssistant() {
@@ -463,13 +471,21 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
 
     // MARK: - Rendering
 
-    private func scheduleRebuild() {
+    /// Coalesces updates. `tailOnly` (streamed text for the in-flight answer)
+    /// re-renders just that answer; anything else rebuilds the transcript.
+    private func scheduleRebuild(tailOnly: Bool = false) {
+        if !tailOnly { fullRebuildPending = true }
         guard !rebuildScheduled else { return }
         rebuildScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
             guard let self else { return }
             self.rebuildScheduled = false
-            self.rebuild()
+            if self.fullRebuildPending {
+                self.fullRebuildPending = false
+                self.rebuild()
+            } else {
+                self.rebuildTail()
+            }
         }
     }
 
@@ -490,10 +506,41 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
 
         let lastAnswer = items.lastIndex(where: { $0.kind == .assistant })
         let full = NSMutableAttributedString()
+        streamTailStart = nil
         for (i, item) in items.enumerated() {
+            if i == items.count - 1, item.kind == .assistant, !item.done {
+                streamTailStart = full.length
+            }
             full.append(attributed(item, index: i, isLastAnswer: i == lastAnswer))
         }
         outputView.textStorage?.setAttributedString(full)
+        finishRebuild(stick: stick, origin: origin)
+    }
+
+    /// Streaming fast path: finished items are already in the text storage, so
+    /// replace only the in-flight answer instead of rebuilding and re-laying-out
+    /// the whole transcript on every update. Falls back to a full rebuild
+    /// whenever the assumptions (tail offset, width) don't hold.
+    private func rebuildTail() {
+        guard let start = streamTailStart,
+              let ts = outputView.textStorage, start <= ts.length,
+              let last = items.last, last.kind == .assistant, !last.done,
+              round(scrollView.contentSize.width) == layoutWidth else {
+            rebuild()
+            return
+        }
+        let stick = isNearBottom()
+        let origin = scrollView.contentView.bounds.origin
+        let piece = attributed(last, index: items.count - 1, isLastAnswer: true)
+        ts.beginEditing()
+        ts.replaceCharacters(in: NSRange(location: start, length: ts.length - start), with: piece)
+        ts.endEditing()
+        finishRebuild(stick: stick, origin: origin)
+    }
+
+    private func finishRebuild(stick: Bool, origin: NSPoint) {
+        // Only invalid (edited) regions are laid out, so this is cheap after a
+        // tail replacement.
         outputView.layoutManager?.ensureLayout(for: outputView.textContainer!)
 
         if stick {
@@ -553,7 +600,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
                 let parts = url.pathComponents.filter { $0 != "/" }
                 guard parts.count == 2, let i = Int(parts[0]), let b = Int(parts[1]) else { return }
                 target = .code(item: i, block: b)
-            } else if let scheme = url.scheme?.lowercased(), ["http", "https", "mailto"].contains(scheme) {
+            } else if LinkPolicy.isOpenable(url) {
                 // use the first line's rect so the badge sits at the start of
                 // the link, not somewhere in the middle of a wrapped line.
                 let firstGlyph = NSRange(location: glyph.location, length: min(1, glyph.length))
@@ -604,8 +651,9 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
             NSPasteboard.general.setString(items[i].codeBlocks[b], forType: .string)
             toast("Code #\(n) copied")
         case .link(let url):
+            guard LinkPolicy.isOpenable(url) else { return }
             NSWorkspace.shared.open(url)
-            Debug.log("action: openVisibleTarget #\(n) url=\(url.absoluteString)")
+            Debug.log("action: openVisibleTarget #\(n) host=\(url.host ?? "?")")
             toast("Link #\(n) opened")
         }
     }
@@ -855,7 +903,9 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
         guard let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else { return false }
         guard url.scheme == "servitor" else {
-            NSWorkspace.shared.open(url)
+            // Defence in depth: the renderer only attaches http(s) links, but
+            // never hand anything else to the system.
+            if LinkPolicy.isOpenable(url) { NSWorkspace.shared.open(url) }
             return true
         }
         switch url.host {
@@ -915,7 +965,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         }
         let used = outputView.layoutManager.map { $0.usedRect(for: outputView.textContainer!) } ?? .zero
         let links = countLinks()
-        Debug.log("dump: key=\(panel.isKeyWindow) appActive=\(NSApp.isActive) fr=\(panel.firstResponder.map { String(describing: type(of: $0)) } ?? "nil") input=\"\(inputField.stringValue.prefix(40))\" panel=\(NSStringFromSize(panel.frame.size)) clipW=\(scrollView.contentSize.width) containerW=\(outputView.textContainer?.size.width ?? -1) usedW=\(used.width) usedH=\(used.height) items=\(items.count) links=\(links)")
+        Debug.log("dump: key=\(panel.isKeyWindow) appActive=\(NSApp.isActive) fr=\(panel.firstResponder.map { String(describing: type(of: $0)) } ?? "nil") panel=\(NSStringFromSize(panel.frame.size)) clipW=\(scrollView.contentSize.width) containerW=\(outputView.textContainer?.size.width ?? -1) usedW=\(used.width) usedH=\(used.height) items=\(items.count) links=\(links)")
     }
 
     private func countLinks() -> Int {

@@ -7,6 +7,17 @@ struct RenderedMarkdown {
     let codeBlocks: [String]
 }
 
+/// Which URLs model-authored text may turn into clickable links. Anything
+/// else (file://, smb://, x-apple.*://, mailto:, and the app-internal
+/// servitor:// actions) stays plain text, so a prompt-injected answer can't
+/// make a single click launch an app or trigger an internal action.
+enum LinkPolicy {
+    static func isOpenable(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
+        return url.host?.isEmpty == false
+    }
+}
+
 /// A compact markdown → NSAttributedString renderer tuned for chat answers:
 /// headings, bold/italic/strike, inline + fenced code, lists, quotes, rules,
 /// tables, and highlighted (clickable) links including bare URLs.
@@ -303,14 +314,14 @@ enum Markdown {
                 attrs[.foregroundColor] = T.inlineCode
                 attrs[.backgroundColor] = T.codeBg
                 let candidate = piece.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let url = URL(string: candidate), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil {
+                if let url = URL(string: candidate), LinkPolicy.isOpenable(url) {
                     // A URL in backticks remains an openable link, not a copy-code target.
                     attrs[.link] = url
                 } else if let codeLink {
                     attrs[.link] = codeLink(piece)
                 }
             }
-            if let url = run.link { attrs[.link] = url }
+            if let url = run.link, LinkPolicy.isOpenable(url) { attrs[.link] = url }
             result.append(NSAttributedString(string: piece, attributes: attrs))
         }
         autolink(result)
@@ -322,7 +333,7 @@ enum Markdown {
         guard let detector = linkDetector else { return }
         let whole = NSRange(location: 0, length: s.length)
         for match in detector.matches(in: s.string, options: [], range: whole) {
-            guard let url = match.url else { continue }
+            guard let url = match.url, LinkPolicy.isOpenable(url) else { continue }
             if s.attribute(.link, at: match.range.location, effectiveRange: nil) != nil { continue }
             if s.attribute(.backgroundColor, at: match.range.location, effectiveRange: nil) != nil { continue }
             s.addAttribute(.link, value: url, range: match.range)

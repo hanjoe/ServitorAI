@@ -25,17 +25,22 @@ cp "$HERE/Assets/servitor-skull.png" "$APP/Contents/Resources/servitor-skull.png
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$HERE"/Assets/Fonts/*.ttf "$HERE"/Assets/Fonts/OFL-*.txt "$APP/Contents/Resources/Fonts/"
 mkdir -p "$APP/Contents/Resources/Extensions"
-cp "$HERE/Assets/Extensions/list-files.ts" "$APP/Contents/Resources/Extensions/list-files.ts"
+cp "$HERE"/Assets/Extensions/*.ts "$APP/Contents/Resources/Extensions/"
 
 echo "==> Installing LaunchAgent"
 mkdir -p "$HOME/Library/LaunchAgents"
 sed -e "s|/Users/YOU/Applications|$APP_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
 
+# Config may hold an API key and sessions hold chat history: owner-only.
+umask 077
+mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$CONFIG" ]]; then
   echo "==> Creating default config at $CONFIG"
-  mkdir -p "$CONFIG_DIR"
   cp "$HERE/config.example.json" "$CONFIG"
 fi
+chmod 700 "$CONFIG_DIR"
+find "$CONFIG_DIR" -type d -exec chmod 700 {} + 2>/dev/null || true
+find "$CONFIG_DIR" -type f -exec chmod 600 {} + 2>/dev/null || true
 
 echo
 echo "Done. To finish setup:"

@@ -1,5 +1,9 @@
 import AppKit
 
+// Everything this app (and the pi child it spawns) creates is owner-only:
+// config, logs and chat sessions may contain secrets and private chats.
+umask(0o077)
+
 // Debug helper: render the servitor sigil to a PNG and exit.
 //   ServitorAI --render-sigil /tmp/sigil.png
 let args = CommandLine.arguments
@@ -20,6 +24,8 @@ if args.count >= 3 && args[1] == "--render-sigil" {
     }
     exit(0)
 }
+
+Paths.hardenPermissions()
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

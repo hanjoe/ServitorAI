@@ -18,6 +18,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     /// Stable app-level chat id (NOT the pi session path — that changes on fork).
     private var currentChatId = UUID().uuidString
     private var restartScheduled = false
+    /// Consecutive pi restarts without a completed answer; drives backoff.
+    private var restartAttempts = 0
+    private static let maxRestartAttempts = 6
+    private var rpcGaveUp = false
+    /// False until the first pi child has been launched (secrets resolve first).
+    private var rpcLaunched = false
     private var currentModelIndex = 0
     private var lastShownFailure: String?
     /// Proton Pass resolution result — computed once at launch, reused by
@@ -36,23 +42,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         buildHotKey()
         buildKeyMonitor()
         resolveInitialModelIndex()
-        resolveSecrets()
-        startRpc()
-        warnIfKeyMissing()
+        // The client exists immediately (commands queue inside it); the pi
+        // process starts once secrets are resolved, off the main thread.
+        rpc = PiRpcClient(config: config)
+        rpc.delegate = self
+        resolveSecretsThenStartRpc()
         registerDebugHooks()
         NotificationCenter.default.addObserver(forName: Keymap.changed, object: nil, queue: .main) { [weak self] _ in
             self?.buildMainMenu()
         }
     }
 
-    private func resolveSecrets() {
-        guard let env = config.env, !env.isEmpty else { return }
-        let result = Secrets.resolve(env)
-        secretsEnv = result.values
-        secretsPassKeys = result.passKeys
-        secretsFailed = result.failed
-        if !secretsFailed.isEmpty {
-            panel.showNotice("⚠ Proton Pass: couldn't resolve \(secretsFailed.joined(separator: ", ")) — run `pass-cli login` or fix the pass:// reference in config.json.")
+    /// pass-cli can take seconds (8s cap per reference), so never run it on the
+    /// main thread: resolve in the background, then launch pi.
+    private func resolveSecretsThenStartRpc() {
+        guard let env = config.env, !env.isEmpty else {
+            startRpc()
+            warnIfKeyMissing()
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Secrets.resolve(env)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.secretsEnv = result.values
+                self.secretsPassKeys = result.passKeys
+                self.secretsFailed = result.failed
+                if !self.secretsFailed.isEmpty {
+                    self.panel.showNotice("⚠ Proton Pass: couldn't resolve \(self.secretsFailed.joined(separator: ", ")) — run `pass-cli login` or fix the pass:// reference in config.json.")
+                }
+                self.startRpc()
+                self.warnIfKeyMissing()
+            }
         }
     }
 
@@ -175,18 +196,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     private func startRpc() {
-        rpc = PiRpcClient(config: config, resolvedEnv: secretsEnv, passKeys: secretsPassKeys)
-        rpc.delegate = self
-        rpc.start()
+        // The first launch reuses the client created at startup (it may hold
+        // queued commands); every restart needs a fresh Process.
+        if rpcLaunched {
+            let carriedModel = rpc.selectedModel   // a restarted pi must not fall back to the config default
+            rpc = PiRpcClient(config: config)
+            rpc.delegate = self
+            rpc.selectedModel = carriedModel
+        }
+        rpcLaunched = true
+        rpc.start(resolvedEnv: secretsEnv, passKeys: secretsPassKeys)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.rpc.refreshState()
         }
     }
 
+    /// Exponential backoff (1.5s, 3s, 6s … capped at 60s) with a retry limit, so
+    /// a missing or crashing pi binary can't spin in a tight restart loop.
     private func scheduleRpcRestart() {
-        guard !restartScheduled else { return }
+        guard !restartScheduled, !rpcGaveUp else { return }
+        guard restartAttempts < Self.maxRestartAttempts else {
+            rpcGaveUp = true
+            Debug.log("pi restart: giving up after \(restartAttempts) attempts")
+            panel.showNotice("⚠ pi keeps exiting — check /opt/homebrew/bin/pi and ~/.config/servitorai/pi.log. Send a message to try again.")
+            return
+        }
+        let delay = min(60.0, 1.5 * pow(2.0, Double(restartAttempts)))
+        restartAttempts += 1
         restartScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        Debug.log("pi restart: attempt \(restartAttempts) in \(delay)s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.restartScheduled = false
             self.startRpc()
@@ -475,13 +514,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
 
     private func switchModel(_ m: ModelOption) {
         Debug.log("action: switchModel \(m.provider)/\(m.modelId)")
+        let previousIndex = currentModelIndex
         if let idx = config.models.firstIndex(where: { $0.modelId == m.modelId && $0.provider == m.provider }) {
             currentModelIndex = idx
         }
         panel.setModelLabel(m.label)
         statusItem.button?.toolTip = "ServitorAI · \(m.label)"
         rpc.setModel(provider: m.provider, modelId: m.modelId) { [weak self] data in
-            self?.panel.toast(data == nil ? "Model switch failed" : "Model: \(m.label)")
+            guard let self else { return }
+            if data == nil {
+                // pi rejected the switch: keep the label truthful about the model pi is really using.
+                if self.currentModelIndex == (self.config.models.firstIndex(where: { $0.modelId == m.modelId && $0.provider == m.provider }) ?? -1) {
+                    self.currentModelIndex = previousIndex
+                    self.panel.setModelLabel(self.currentModelLabel())
+                    self.statusItem.button?.toolTip = "ServitorAI · \(self.currentModelLabel())"
+                }
+                self.panel.toast("Model switch failed")
+            } else {
+                self.panel.toast("Model: \(m.label)")
+            }
         }
     }
 
@@ -550,7 +601,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     private func submit(text: String) {
-        Debug.log("submit(text: \"\(text.prefix(40))\") provider=\(config.provider) model=\(config.model)")
+        Debug.log("submit(chars: \(text.count)) provider=\(config.provider) model=\(config.model)")
+        if rpcGaveUp {
+            // The user is trying again after we stopped auto-restarting.
+            rpcGaveUp = false
+            restartAttempts = 0
+            startRpc()
+        }
         messages.append(ChatMessage(role: "user", text: text))
         currentAssistantText = ""
         isStreaming = true
@@ -709,6 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
 
     func piClientDidSettle(_ client: PiRpcClient) {
         Debug.log("piClientDidSettle (isStreaming=\(isStreaming), collectedText=\(currentAssistantText.count) chars)")
+        restartAttempts = 0   // pi is healthy again: reset the backoff
         panel.setBusy(false)
         if isStreaming {
             isStreaming = false
