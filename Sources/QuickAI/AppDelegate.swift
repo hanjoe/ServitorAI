@@ -329,24 +329,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     /// Opens ~/.config/servitorai/keybinds.conf in the user's terminal editor
     /// (Ghostty running $EDITOR/$VISUAL, falling back to nvim, then to the
     /// OS-default handler for the file). Edits hot-reload automatically.
+    /// Opens ~/.config/servitorai/keybinds.conf in a terminal editor. Prefers
+    /// Ghostty + $EDITOR when both are present, but neither is required:
+    /// falls back to Terminal.app (ships on every Mac) and to nvim/vim/vi
+    /// (vi is POSIX-guaranteed present) when $EDITOR/$VISUAL aren't set.
     private func openKeybindsConfigInEditor() {
         let path = Keymap.configPath.path
-        let editor = ProcessInfo.processInfo.environment["EDITOR"]
-            ?? ProcessInfo.processInfo.environment["VISUAL"]
-            ?? "nvim"
-        Debug.log("settings: opening \(path) via ghostty -e \(editor)")
+        let editor = resolveEditor()
+        Debug.log("settings: opening \(path) with editor=\(editor)")
 
-        let ghostty = "/Applications/Ghostty.app"
-        guard FileManager.default.fileExists(atPath: ghostty) else {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
-            return
+        if FileManager.default.fileExists(atPath: "/Applications/Ghostty.app") {
+            // Ghostty's own CLI docs: launching the terminal directly isn't
+            // supported on macOS — `open -na Ghostty --args -e <cmd>` is the
+            // documented path.
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            p.arguments = ["-na", "/Applications/Ghostty.app", "--args", "-e", editor, path]
+            if (try? p.run()) != nil { return }
         }
-        // Ghostty's CLI docs: launching the terminal directly isn't supported
-        // on macOS — `open -na Ghostty --args -e <cmd>` is the documented path.
+
+        // Universal fallback: Terminal.app, present on every macOS install.
+        let escapedPath = path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let command = "\(editor) \"\(escapedPath)\"".replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "tell application \"Terminal\"\nactivate\ndo script \"\(command)\"\nend tell"
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-na", ghostty, "--args", "-e", editor, path]
-        try? p.run()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", script]
+        if (try? p.run()) != nil { return }
+
+        // Nothing scriptable worked — hand the file to whatever macOS has
+        // registered for it (likely TextEdit).
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    /// $EDITOR/$VISUAL first; then common absolute install paths (a
+    /// GUI-launched app's PATH often lacks /opt/homebrew/bin); then `which`;
+    /// then /usr/bin/vi, which every macOS install ships.
+    private func resolveEditor() -> String {
+        if let e = ProcessInfo.processInfo.environment["EDITOR"], !e.isEmpty { return e }
+        if let e = ProcessInfo.processInfo.environment["VISUAL"], !e.isEmpty { return e }
+        let candidates = [
+            "/opt/homebrew/bin/nvim", "/usr/local/bin/nvim",
+            "/opt/homebrew/bin/vim", "/usr/local/bin/vim", "/usr/bin/vim",
+        ]
+        for c in candidates where FileManager.default.isExecutableFile(atPath: c) { return c }
+        if let found = which("nvim") ?? which("vim") { return found }
+        return "/usr/bin/vi"
+    }
+
+    private func which(_ name: String) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        p.arguments = [name]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        p.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !out.isEmpty else { return nil }
+        return out
     }
     @objc private func actShowModelPicker() { panel.showModelMenu() }
     @objc private func actShowHistory() { panel.showHistoryMenu() }

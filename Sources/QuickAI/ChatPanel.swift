@@ -219,7 +219,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         emptySubtitle.alignment = .center
 
         let emptyHints = NSTextField(labelWithString: ChatPanel.hintText())
-        emptyHints.font = T.pixel(8)
+        emptyHints.font = T.pixel(12)
         emptyHints.textColor = T.overlay0
         emptyHints.alignment = .center
 
@@ -278,7 +278,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
             self.items.forEach { $0.rendered = nil }
             self.rebuild()
         }
-        hintLabel.font = T.pixel(7)
+        hintLabel.font = T.pixel(11)
         hintLabel.textColor = T.overlay0
         hintLabel.alignment = .center
         hintLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -554,10 +554,10 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         // Each button shows the key that triggers it.
         let k = Keymap.shared
         for (i, (title, key, target)) in [("COPY", k.display(for: .copyAnswer), "copy-answer"), ("RETRY", k.display(for: .regenerate), "regenerate")].enumerated() {
-            if i > 0 { row.append(NSAttributedString(string: "    ", attributes: [.font: T.pixel(8)])) }
+            if i > 0 { row.append(NSAttributedString(string: "    ", attributes: [.font: T.pixel(10)])) }
             let start = row.length
             row.append(NSAttributedString(string: "[ \(title) \(key) ]", attributes: [
-                .font: T.pixel(8),
+                .font: T.pixel(10),
             ]))
             row.addAttribute(.link, value: URL(string: "servitor://\(target)") as Any,
                              range: NSRange(location: start, length: row.length - start))
