@@ -338,6 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     private func submit(text: String) {
+        Debug.log("submit(text: \"\(text.prefix(40))\") provider=\(config.provider) model=\(config.model)")
         messages.append(ChatMessage(role: "user", text: text))
         currentAssistantText = ""
         isStreaming = true
@@ -346,6 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         panel.setBusy(true)
         adoptCurrentId()
         rpc.prompt(text)
+        Debug.log("rpc.prompt() called")
     }
 
     func chatPanelDidRequestCancel(_ panel: ChatPanel) {
@@ -359,11 +361,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     // MARK: - PiRpcClientDelegate
 
     func piClient(_ client: PiRpcClient, didEmitText delta: String) {
+        if currentAssistantText.isEmpty { Debug.log("didEmitText: first delta received") }
         currentAssistantText += delta
         panel.appendRawAssistant(delta)
     }
 
     func piClientDidSettle(_ client: PiRpcClient) {
+        Debug.log("piClientDidSettle (isStreaming=\(isStreaming), collectedText=\(currentAssistantText.count) chars)")
         panel.setBusy(false)
         if isStreaming {
             isStreaming = false
@@ -376,6 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     func piClient(_ client: PiRpcClient, didFail error: String) {
+        Debug.log("piClient didFail: \(error) (isStreaming=\(isStreaming))")
         panel.setBusy(false)
         if isStreaming {
             isStreaming = false

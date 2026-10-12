@@ -91,11 +91,15 @@ final class PiRpcClient {
     }
 
     private func readLoop() {
+        Debug.log("readLoop started")
         while true {
-            let data = readPipe.fileHandleForReading.readData(ofLength: 65536)
+            // availableData returns as soon as ANY bytes arrive; readData(ofLength:)
+            // would block until 64 KB or EOF, so small RPC replies never surfaced.
+            let data = readPipe.fileHandleForReading.availableData
             if data.isEmpty { break }
             consume(data)
         }
+        Debug.log("readLoop ended (EOF on pi stdout)")
     }
 
     private func consume(_ data: Data) {
@@ -111,8 +115,14 @@ final class PiRpcClient {
     }
 
     private func processLine(_ data: Data) {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            if let s = String(data: data, encoding: .utf8), !s.isEmpty {
+                Debug.log("processLine: FAILED to parse JSON (len=\(data.count)): \(s.prefix(200))")
+            }
+            return
+        }
         let type = obj["type"] as? String
+        Debug.log("event: \(type ?? "<no type>")")
 
         switch type {
         case "response":
@@ -214,9 +224,12 @@ final class PiRpcClient {
         if let completion { pending[id] = completion }
         lock.unlock()
         var cmd = command
+        cmd["id"] = id
         var data = (try? JSONSerialization.data(withJSONObject: cmd)) ?? Data()
         data.append(0x0A)
+        Debug.log("send: writing \(data.count) bytes, id=\(id), type=\(command["type"] ?? "?")")
         writePipe.fileHandleForWriting.write(data)
+        Debug.log("send: write() returned for id=\(id)")
     }
 
     func prompt(_ message: String) {
