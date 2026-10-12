@@ -72,7 +72,9 @@ final class PiRpcClient {
         do {
             try process.run()
         } catch {
-            delegate?.piClient(self, didFail: "Failed to start pi: \(error.localizedDescription)")
+            let msg = "Failed to start pi: \(error.localizedDescription)"
+            Self.appendDiagnostic(msg)
+            delegate?.piClient(self, didFail: msg)
             return
         }
 
@@ -185,6 +187,22 @@ final class PiRpcClient {
             return h
         }
         return FileHandle.nullDevice
+    }
+
+    /// Append a timestamped line straight to pi.log, used for failures that
+    /// happen before (or without) a pi process to redirect stderr from.
+    private static func appendDiagnostic(_ message: String) {
+        let url = Paths.configDir.appendingPathComponent("pi.log")
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: nil)
+        }
+        guard let h = FileHandle(forWritingAtPath: url.path) else { return }
+        h.seekToEndOfFile()
+        let line = "[\(Date())] \(message)\n"
+        if let data = line.data(using: .utf8) { h.write(data) }
+        try? h.close()
     }
 
     // MARK: - Commands

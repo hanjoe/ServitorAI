@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     private var restartScheduled = false
 
     private var currentModelIndex = 0
+    private var lastShownFailure: String?
     private var navList: [String] = []
     private var navIndex = -1
 
@@ -384,10 +385,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
                 messages.append(ChatMessage(role: "assistant", text: currentAssistantText))
             }
             currentAssistantText = ""
+        } else if error != lastShownFailure {
+            // Startup / idle failures (e.g. pi never managed to launch) are
+            // otherwise completely silent — always surface them.
+            panel.showNotice("⚠ \(error)")
         }
-        if error.contains("exited") {
-            scheduleRpcRestart()
-        }
+        lastShownFailure = error
+        // Always retry: a dead or never-started pi process must self-heal
+        // regardless of what the failure message happens to say.
+        scheduleRpcRestart()
     }
 
     func piClient(_ client: PiRpcClient, didUpdateSession file: String?, id: String?, name: String?) {
