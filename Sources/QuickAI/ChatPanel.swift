@@ -70,7 +70,20 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
     static let defaultSize = NSSize(width: 960, height: 700)
 
     /// The one-line cheat sheet shown above the input and in the empty state.
-    static let hints = "⌘K actions · ⌘⇧C copy · ⌘⌥C code · ⌘↵ paste · ⌘R retry · ⌘N new · ⌘M model · ⌘1-9 pick · ⌘[ ] chats · esc close"
+    static func hintText() -> String {
+        let k = Keymap.shared
+        return [
+            "\(k.display(for: .actionsMenu)) actions",
+            "\(k.display(for: .copyAnswer)) copy",
+            "\(k.display(for: .copyCode)) code",
+            "\(k.display(for: .regenerate)) retry",
+            "\(k.display(for: .newChat)) new",
+            "\(k.display(for: .cycleModel)) model",
+            "⌃1-9 pick",
+            "\(k.display(for: .prevChat))/\(k.display(for: .nextChat)) chats",
+            "esc close",
+        ].joined(separator: " · ")
+    }
 
     private static func initialSize() -> NSSize {
         let d = UserDefaults.standard
@@ -205,7 +218,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         emptySubtitle.textColor = T.subtext
         emptySubtitle.alignment = .center
 
-        let emptyHints = NSTextField(labelWithString: ChatPanel.hints)
+        let emptyHints = NSTextField(labelWithString: ChatPanel.hintText())
         emptyHints.font = T.pixel(8)
         emptyHints.textColor = T.overlay0
         emptyHints.alignment = .center
@@ -258,7 +271,13 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         ])
 
         // --- Keyboard hints (always visible above the input) ---
-        hintLabel.stringValue = ChatPanel.hints
+        hintLabel.stringValue = ChatPanel.hintText()
+        NotificationCenter.default.addObserver(forName: Keymap.changed, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.hintLabel.stringValue = ChatPanel.hintText()
+            self.items.forEach { $0.rendered = nil }
+            self.rebuild()
+        }
         hintLabel.font = T.pixel(7)
         hintLabel.textColor = T.overlay0
         hintLabel.alignment = .center
@@ -533,7 +552,8 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         let style = Markdown.para(spacingBefore: 2, spacingAfter: 4)
         let row = NSMutableAttributedString()
         // Each button shows the key that triggers it.
-        for (i, (title, key, target)) in [("COPY", "⌘⇧C", "copy-answer"), ("RETRY", "⌘R", "regenerate")].enumerated() {
+        let k = Keymap.shared
+        for (i, (title, key, target)) in [("COPY", k.display(for: .copyAnswer), "copy-answer"), ("RETRY", k.display(for: .regenerate), "regenerate")].enumerated() {
             if i > 0 { row.append(NSAttributedString(string: "    ", attributes: [.font: T.pixel(8)])) }
             let start = row.length
             row.append(NSAttributedString(string: "[ \(title) \(key) ]", attributes: [

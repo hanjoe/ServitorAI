@@ -32,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         startRpc()
         warnIfKeyMissing()
         registerDebugHooks()
+        NotificationCenter.default.addObserver(forName: Keymap.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.buildMainMenu()
+        }
     }
 
     /// Accessory apps have no menu bar, so ⌘C/⌘V/⌘X/⌘A/⌘Z never reach text
@@ -40,34 +43,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         let main = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: "ServitorAI")
-        func addBinding(_ title: String, _ action: Selector, _ key: String, _ mods: NSEvent.ModifierFlags) {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
-            item.keyEquivalentModifierMask = mods
+        // All bindings come from the (rebindable) Keymap — ctrl-based by default.
+        func bind(_ title: String, _ action: Selector, _ appAction: AppAction) {
+            guard let b = Keymap.shared.binding(for: appAction) else { return }
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: b.key)
+            item.keyEquivalentModifierMask = NSEvent.ModifierFlags(rawValue: b.modifiers)
             item.target = self
             appMenu.addItem(item)
         }
-        addBinding("Open Actions", #selector(actShowActions), "k", [.command])
-        addBinding("New Chat", #selector(actNewChat), "n", [.command])
-        addBinding("Copy Answer", #selector(actCopyAnswer), "c", [.command, .shift])
-        addBinding("Copy Last Code Block", #selector(actCopyCode), "c", [.command, .option])
-        addBinding("Paste Answer to App", #selector(actPaste), "\r", [.command])
-        addBinding("Regenerate", #selector(actRegenerate), "r", [.command])
-        addBinding("Regenerate with Next Model", #selector(actRegenerateNextModel), "r", [.command, .shift])
-        addBinding("Cycle Model", #selector(actCycleModel), "m", [.command])
-        addBinding("Model Picker", #selector(actShowModelPicker), "m", [.command, .shift])
-        addBinding("Recent Chats", #selector(actShowHistory), "h", [.command, .shift])
-        addBinding("Focus Input", #selector(actFocusInput), "l", [.command])
-        addBinding("Previous Chat", #selector(actPrevChat), "[", [.command])
-        addBinding("Next Chat", #selector(actNextChat), "]", [.command])
-        addBinding("Previous Chat (alternate)", #selector(actPrevChat), String(Character(UnicodeScalar(NSLeftArrowFunctionKey)!)), [.command, .option])
-        addBinding("Next Chat (alternate)", #selector(actNextChat), String(Character(UnicodeScalar(NSRightArrowFunctionKey)!)), [.command, .option])
-        for i in 0..<min(9, config.models.count) {
-            addBinding("Model \(i + 1): \(config.models[i].label)", #selector(selectModelByTag(_:)), String(i + 1), [.command])
-            appMenu.items.last?.tag = i
-        }
+        bind("Actions Menu", #selector(actShowActions), .actionsMenu)
+        bind("Settings…", #selector(actSettings), .settings)
         appMenu.addItem(.separator())
-        addBinding("Hide", #selector(actHide), "w", [.command])
-        addBinding("Quit", #selector(NSApplication.terminate(_:)), "q", [.command])
+        bind("Copy Answer", #selector(actCopyAnswer), .copyAnswer)
+        bind("Copy Last Code Block", #selector(actCopyCode), .copyCode)
+        bind("Paste Answer to App", #selector(actPaste), .pasteAnswer)
+        bind("Regenerate", #selector(actRegenerate), .regenerate)
+        bind("Regenerate with Next Model", #selector(actRegenerateNextModel), .regenerateNextModel)
+        appMenu.addItem(.separator())
+        bind("New Chat", #selector(actNewChat), .newChat)
+        bind("Previous Chat", #selector(actPrevChat), .prevChat)
+        bind("Next Chat", #selector(actNextChat), .nextChat)
+        bind("Previous Chat (alt)", #selector(actPrevChat), .prevChatAlt)
+        bind("Next Chat (alt)", #selector(actNextChat), .nextChatAlt)
+        bind("Cycle Model", #selector(actCycleModel), .cycleModel)
+        bind("Model Picker", #selector(actShowModelPicker), .modelPicker)
+        for i in 0..<min(9, config.models.count) {
+            let item = NSMenuItem(title: "Model \(i + 1): \(config.models[i].label)", action: #selector(selectModelByTag(_:)), keyEquivalent: String(i + 1))
+            item.keyEquivalentModifierMask = [.control]
+            item.target = self
+            item.tag = i
+            appMenu.addItem(item)
+        }
+        bind("Recent Chats", #selector(actShowHistory), .recentChats)
+        bind("Focus Input", #selector(actFocusInput), .focusInput)
+        appMenu.addItem(.separator())
+        bind("Hide", #selector(actHide), .hide)
+        bind("Quit", #selector(NSApplication.terminate(_:)), .quit)
         appItem.submenu = appMenu
         main.addItem(appItem)
 
@@ -175,18 +186,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         }
     }
 
-    /// Returns nil when the event was consumed.
+    /// Returns nil when the event was consumed. All action shortcuts are real
+    /// NSMenu key equivalents (rebuilt from the Keymap); this only handles Esc
+    /// and routing typed characters to the input box.
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
         guard panel.isVisible else { return event }
-        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let cmd = mods.contains(.command)
-        let ctrl = mods.contains(.control)
-
-        if event.keyCode == 53 && !cmd { cancelOrAbort(); return nil }          // Esc
-
-        guard !cmd else { return event } // NSMenu key equivalents dispatch all ⌘ shortcuts.
-        // Typing while the transcript has focus goes to the input box.
-        if !ctrl, panel.routeTypingToInput(event) { return nil }
+        if event.keyCode == 53 && !event.modifierFlags.contains(.command) {
+            cancelOrAbort(); return nil                                     // Esc
+        }
+        if panel.routeTypingToInput(event) { return nil }
         return event
     }
 
@@ -262,46 +270,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         return "\(title) · \(formatter.localizedString(for: meta.updated, relativeTo: Date()))"
     }
 
-    /// ⌘K — every action with its shortcut, like Raycast's action panel.
+    /// Actions panel — every action with its current shortcut (from the Keymap).
     private func showActionsMenu() {
         let menu = NSMenu()
-        func add(_ title: String, _ sel: Selector, _ key: String, _ mods: NSEvent.ModifierFlags) {
-            let item = NSMenuItem(title: title, action: sel, keyEquivalent: key)
-            item.keyEquivalentModifierMask = mods
+        func add(_ title: String, _ sel: Selector, _ action: AppAction) {
+            let item = NSMenuItem(title: "\(title)    \(Keymap.shared.display(for: action))", action: sel, keyEquivalent: "")
             item.target = self
             menu.addItem(item)
         }
-        let left = String(Character(UnicodeScalar(NSLeftArrowFunctionKey)!))
-        let right = String(Character(UnicodeScalar(NSRightArrowFunctionKey)!))
-
-        add("Copy Answer", #selector(actCopyAnswer), "c", [.command, .shift])
-        add("Copy Last Code Block", #selector(actCopyCode), "c", [.command, .option])
-        add("Paste Answer to App", #selector(actPaste), "\r", [.command])
+        add("Copy Answer", #selector(actCopyAnswer), .copyAnswer)
+        add("Copy Last Code Block", #selector(actCopyCode), .copyCode)
+        add("Paste Answer to App", #selector(actPaste), .pasteAnswer)
         menu.addItem(.separator())
-        add("Regenerate", #selector(actRegenerate), "r", [.command])
-        add("Regenerate with Next Model", #selector(actRegenerateNextModel), "r", [.command, .shift])
+        add("Regenerate", #selector(actRegenerate), .regenerate)
+        add("Regenerate with Next Model", #selector(actRegenerateNextModel), .regenerateNextModel)
         menu.addItem(.separator())
-        add("New Chat", #selector(actNewChat), "n", [.command])
-        add("Previous Chat", #selector(actPrevChat), "[", [.command])
-        add("Next Chat", #selector(actNextChat), "]", [.command])
-        add("Previous Chat (⌘⌥←)", #selector(actPrevChat), left, [.command, .option])
-        add("Next Chat (⌘⌥→)", #selector(actNextChat), right, [.command, .option])
+        add("New Chat", #selector(actNewChat), .newChat)
+        add("Previous Chat", #selector(actPrevChat), .prevChat)
+        add("Next Chat", #selector(actNextChat), .nextChat)
 
         menu.addItem(.separator())
         let models = NSMenuItem(title: "Change Model", action: nil, keyEquivalent: "")
         models.submenu = modelMenu()
         menu.addItem(models)
-        add("Cycle Model", #selector(actCycleModel), "m", [.command])
-        add("Model Picker", #selector(actShowModelPicker), "m", [.command, .shift])
-        add("Recent Chats", #selector(actShowHistory), "h", [.command, .shift])
-        add("Focus Input", #selector(actFocusInput), "l", [.command])
+        add("Cycle Model", #selector(actCycleModel), .cycleModel)
+        add("Model Picker", #selector(actShowModelPicker), .modelPicker)
 
         let recent = NSMenuItem(title: "Recent Chats", action: nil, keyEquivalent: "")
         recent.submenu = recentSessionsMenu()
         menu.addItem(recent)
 
         menu.addItem(.separator())
-        add("Hide", #selector(actHide), "w", [.command])
+        add("Focus Input", #selector(actFocusInput), .focusInput)
+        add("Settings…", #selector(actSettings), .settings)
+        add("Hide", #selector(actHide), .hide)
         panel.popUpMenu(menu)
     }
 
@@ -318,6 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     @objc private func actShowActions() { showActionsMenu() }
+    @objc private func actSettings() { SettingsWindowController.shared.show() }
     @objc private func actShowModelPicker() { panel.showModelMenu() }
     @objc private func actShowHistory() { panel.showHistoryMenu() }
     @objc private func actFocusInput() { panel.focusInput() }
@@ -604,7 +607,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
             panel.showNotice("⚠ \(error)")
         }
         lastShownFailure = error
-        scheduleRpcRestart()
+        // Only restart when the pi process itself died — provider errors
+        // (bad key, overload) must not kill the session.
+        if error.contains("exited") || error.hasPrefix("Failed to start pi") {
+            scheduleRpcRestart()
+        }
     }
 
     func piClient(_ client: PiRpcClient, didUpdateSession file: String?, id: String?, name: String?) {}

@@ -71,28 +71,29 @@ Fast-model notes (measured warm time-to-first-token):
 
 ## Shortcuts
 
-All shortcuts are real menu key equivalents (the app menu defines them; ⌘K lists them in-app and a hint line sits above the input).
+All shortcuts are real NSMenu key equivalents, ctrl-based by default, and fully rebindable — press ⌃, (Settings) to record new combos for any action (Esc cancels, right-click resets to default).
 
-| action | key |
-|--------|-----|
+| action | default key |
+|--------|--------------|
 | Toggle panel (global) | ⌘⇧A |
 | Submit | Enter |
 | Cancel / hide | Esc |
-| Actions menu | ⌘K |
-| Copy last answer | ⌘⇧C |
-| Copy last code block | ⌘⌥C |
+| Actions menu | ⌃K |
+| Settings | ⌃, |
+| Copy last answer | ⌃C |
+| Copy last code block | ⌃⌥C |
 | Copy selection (native) | ⌘C |
-| Paste answer into previous app | ⌘↵ |
-| Regenerate | ⌘R |
-| Regenerate with next model | ⇧⌘R |
-| New chat | ⌘N |
-| Previous / next chat | ⌘[ / ⌘] (or ⌘⌥← / ⌘⌥→) |
-| Cycle model | ⌘M |
-| Model picker menu | ⇧⌘M |
-| Pick model 1–9 | ⌘1 … ⌘9 |
-| Recent chats | ⇧⌘H |
-| Focus input | ⌘L |
-| Hide panel | ⌘W |
-| Quit | ⌘Q |
+| Paste answer into previous app | ⌃↵ |
+| Regenerate | ⌃R |
+| Regenerate with next model | ⌃⇧R |
+| New chat | ⌃N |
+| Previous / next chat | ⌃[ / ⌃] |
+| Cycle model | ⌃M |
+| Model picker menu | ⌃⇧M |
+| Pick model 1–9 | ⌃1 … ⌃9 |
+| Recent chats | ⌃⇧H |
+| Focus input | ⌃L |
+| Hide panel | ⌃⇧W |
+| Quit | ⌃Q |
 
 Typing while the transcript is focused jumps back to the input automatically.
