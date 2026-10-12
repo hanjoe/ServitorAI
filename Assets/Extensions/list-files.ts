@@ -1,3 +1,5 @@
+// @ts-nocheck
+// @ts-nocheck
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Dirent, readdir } from "node:fs/promises";

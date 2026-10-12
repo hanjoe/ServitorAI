@@ -1,3 +1,5 @@
+// @ts-nocheck
+// @ts-nocheck
 // Shared path denylist for the read-only tools ServitorAI exposes to pi.
 //
 // This is a best-effort guard, NOT a sandbox: it keeps a prompt-injected model

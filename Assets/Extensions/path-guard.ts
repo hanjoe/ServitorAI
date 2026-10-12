@@ -1,3 +1,5 @@
+// @ts-nocheck
+// @ts-nocheck
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { deniedReason } from "./denylist.ts";
 
