@@ -1,99 +1,74 @@
 # ServitorAI
 
-A menu-bar **quick chat** for macOS, themed as a Warhammer 40k Adeptus Mechanicus
-**servitor** crossed with the **Catppuccin Mocha** palette. It's backed by a warm
-`pi --mode rpc` process so responses don't pay agent boot-up cost, and runs in
-pure chat mode (`--no-tools`) — you are the Omnissiah, it answers.
+A Warhammer × Catppuccin themed macOS menu-bar AI chat app. Fast, keyboard-first, and backed by a warm `pi --mode rpc` process.
 
-## What it does
+![ServitorAI screenshot](docs/screenshot.png)
 
-- **⌘⇧A** toggles a floating chat panel (Carbon hotkey — no Accessibility permission needed).
-- **Streams** answers as they're generated (sub-second time-to-first-token with a fast model).
-- **Model switch** — click the model button or press **⌘M** to cycle through your curated list.
-- **Multi-turn context** — follow-ups see prior messages.
-- **New chat** (**⌘N** / "New") resets via pi's `new_session`.
-- **Recent chats** — ☰ button or menu bar menu lists the last 3; **⌘[ / ⌘]** navigate.
-- **Quick copy** — **⌘⇧C** or the ⧉ button copies the last answer; output is selectable for normal copy.
-- **Regenerate** — **⌘R** re-asks the last question.
-- **Preheated + self-healing** — one long-lived `pi --mode rpc` child; the app auto-restarts it if it exits.
+## What it is
 
-## Theme
+- ⌘⇧A (or your chosen global hotkey) opens a borderless panel from the menu bar.
+- Type, press ↵, get answers from a local/remote LLM via `pi`.
+- Markdown, code blocks, clickable links, and a dark, brass-and-machine-teal aesthetic.
+- No web UI, no Electron, no bloat. Just Swift + AppKit + your own model.
 
-"Servitor" — Catppuccin Mocha base (`#1e1e2e`) with Mechanicus accents:
+## Requirements
 
-- **Mars red** (`#f38ba8`) — the accent / header.
-- **Brass** (`#fab387`) — the Omnissiah's words.
-- **Machine-spirit teal** (`#94e2d5`) — the servitor's replies.
-- Monospace labels for the techno-gothic feel.
+- macOS 14+
+- [pi](https://github.com/earendil-works/pi-coding-agent) installed and on your PATH
+- An API key for your chosen provider (Ollama Cloud, OpenAI, etc.)
 
-## How it works
+## Install
 
-The app owns a single warm `pi` child:
-
-```
-pi --mode rpc --no-tools --no-extensions --no-skills --no-prompt-templates \
-   --no-context-files --no-mcp --thinking off \
-   --provider <provider> --model <model> \
-   --system-prompt <persona> --session-dir ~/.config/servitorai/sessions
-```
-
-Prompts go over JSON-RPC on stdin/stdout; streaming text arrives as
-`text_delta` events and completion as `agent_settled`. Sessions are persisted by
-pi (`.jsonl`) with lightweight `.qai.json` sidecars for the "recent chats" list.
-
-## Build & install
-
-```sh
+```bash
+git clone https://github.com/hanjoe/ServitorAI.git
+cd ServitorAI
 ./install.sh
 ```
 
-Then edit `~/.config/servitorai/config.json` to set `env.OLLAMA_API_KEY` (required
-when auto-starting at login, where the key is not otherwise in the environment):
+Then put your key in `~/.config/servitorai/config.json`:
 
-```sh
+```json
+{
+  "model": "ollama-cloud/deepseek-v4.1-flash",
+  "env": {
+    "OLLAMA_API_KEY": "your-key-here"
+  }
+}
+```
+
+Load the LaunchAgent if you want it auto-starting at login:
+
+```bash
 launchctl load ~/Library/LaunchAgents/com.johanneswitt.servitorai.plist
 ```
 
-## Configuration (`~/.config/servitorai/config.json`)
+## Default keybinds
 
-| key | meaning |
-|-----|---------|
-| `provider` / `model` | pi provider + default model (default `ollama-cloud` / `deepseek-v4.1-flash:cloud`) |
-| `models` | curated list for the in-app switcher — `provider`, `modelId`, `label` |
-| `thinking` | pi `--thinking` level (`off` = lowest latency) |
-| `systemPrompt` | the servitor persona |
-| `env` | extra env vars injected into the pi child (e.g. provider API key) |
+All shortcuts are editable in `~/.config/servitorai/keybinds.conf` (open with ⌘,).
 
-Fast-model notes (measured warm time-to-first-token):
+| Shortcut | Action |
+|----------|--------|
+| ⌘⇧A | Show/hide panel |
+| ↵ | Submit question |
+| ⌃C | Copy last answer |
+| ⌃⌥C | Copy last fenced code block |
+| ⌃⇧1 … ⌃⇧0 | Copy/open the numbered target visible in the viewport |
+| ⌃↵ / ⌘↵ | Paste answer to the previous app |
+| ⌃R | Regenerate |
+| ⌃N | New chat |
+| ⌃[ / ⌃] | Older / newer chat |
+| ⌃M / ⌃1-9 | Cycle / pick model |
+| ⌃, | Open keybinds config in `$EDITOR` |
+| Esc / ⌘W | Hide panel |
 
-- `github-copilot` / `claude-haiku-4.5` — ~0.6s, no env key needed (OAuth stored in `~/.pi/agent/auth.json`).
-- `ollama-cloud` / `deepseek-v4.1-flash:cloud` — ~0.5–0.7s, needs `OLLAMA_API_KEY`.
+`keybinds.conf` is a plain text file with comments. Edit, save, and the app reloads immediately.
 
-## Shortcuts
+## Configuration
 
-All shortcuts are real NSMenu key equivalents, ctrl-based by default, and fully rebindable — press ⌃, (Settings) to record new combos for any action (Esc cancels, right-click resets to default).
+See `config.example.json` for the full shape. Only the `OLLAMA_API_KEY` (or your provider's equivalent) is required.
 
-| action | default key |
-|--------|--------------|
-| Toggle panel (global) | ⌘⇧A |
-| Submit | Enter |
-| Cancel / hide | Esc |
-| Actions menu | ⌃K |
-| Settings | ⌘, |
-| Copy last answer | ⌃C |
-| Copy last code block | ⌃⌥C |
-| Copy selection (native) | ⌘C |
-| Paste answer into previous app | ⌃↵ |
-| Regenerate | ⌃R |
-| Regenerate with next model | ⌃⇧R |
-| New chat | ⌃N |
-| Previous / next chat | ⌃[ / ⌃] |
-| Cycle model | ⌃M |
-| Model picker menu | ⌃⇧M |
-| Pick model 1–9 | ⌃1 … ⌃9 |
-| Recent chats | ⌃⇧H |
-| Focus input | ⌃L |
-| Hide panel | ⌃⇧W |
-| Quit | ⌃Q |
+## License
 
-Typing while the transcript is focused jumps back to the input automatically.
+MIT — see [LICENSE](LICENSE).
+
+Fonts are [Press Start 2P](https://fonts.google.com/specimen/Press+Start+2P) and [VT323](https://fonts.google.com/specimen/VT323), licensed under the SIL Open Font License (`Assets/Fonts/OFL-*.txt`).

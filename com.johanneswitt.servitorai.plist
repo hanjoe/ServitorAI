@@ -6,7 +6,7 @@
     <string>com.johanneswitt.servitorai</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/j.witt/Applications/ServitorAI.app/Contents/MacOS/ServitorAI</string>
+        <string>/Users/YOU/Applications/ServitorAI.app/Contents/MacOS/ServitorAI</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

@@ -27,7 +27,7 @@ cp "$HERE"/Assets/Fonts/*.ttf "$HERE"/Assets/Fonts/OFL-*.txt "$APP/Contents/Reso
 
 echo "==> Installing LaunchAgent"
 mkdir -p "$HOME/Library/LaunchAgents"
-cp "$PLIST_SRC" "$PLIST_DST"
+sed -e "s|/Users/YOU/Applications|$APP_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
 
 if [[ ! -f "$CONFIG" ]]; then
   echo "==> Creating default config at $CONFIG"

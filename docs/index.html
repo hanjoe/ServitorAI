@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ServitorAI — Quick AI for macOS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --mantle: #181825;
+      --base: #1e1e2e;
+      --surface0: #313244;
+      --surface1: #45475a;
+      --text: #cdd6f4;
+      --subtext: #a6adc8;
+      --overlay0: #6c7086;
+      --brass: #b48a5a;
+      --brass-glow: #d4a76a;
+      --machine-teal: #6dc7c7;
+      --link: #89b4fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--mantle);
+      color: var(--text);
+      font-family: "VT323", monospace;
+      font-size: 22px;
+      line-height: 1.35;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 48px 24px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+    h1 {
+      font-family: "Press Start 2P", cursive;
+      font-size: 34px;
+      margin: 0 0 12px;
+      color: var(--brass);
+      text-shadow: 0 0 24px rgba(180,138,90,0.35);
+    }
+    .tagline {
+      color: var(--subtext);
+      font-size: 26px;
+    }
+    .screenshot {
+      display: block;
+      width: 100%;
+      max-width: 760px;
+      margin: 0 auto 48px;
+      border: 2px solid var(--surface1);
+      border-radius: 16px;
+      box-shadow: 0 18px 60px rgba(0,0,0,0.45);
+    }
+    h2 {
+      font-family: "Press Start 2P", cursive;
+      font-size: 16px;
+      color: var(--machine-teal);
+      margin: 42px 0 18px;
+    }
+    .install {
+      background: var(--surface0);
+      border-left: 4px solid var(--brass);
+      padding: 18px 22px;
+      border-radius: 0 12px 12px 0;
+      overflow-x: auto;
+    }
+    .install code {
+      font-family: "VT323", monospace;
+      color: var(--text);
+      font-size: 22px;
+      white-space: pre;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--surface1);
+    }
+    th {
+      color: var(--brass-glow);
+      font-family: "Press Start 2P", cursive;
+      font-size: 12px;
+    }
+    td:first-child { white-space: nowrap; color: var(--machine-teal); }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .cta {
+      text-align: center;
+      margin: 48px 0;
+    }
+    .btn {
+      display: inline-block;
+      font-family: "Press Start 2P", cursive;
+      font-size: 12px;
+      color: var(--mantle);
+      background: var(--brass);
+      padding: 14px 22px;
+      border-radius: 8px;
+      text-decoration: none;
+      box-shadow: 0 6px 0 #7d5a30;
+      transition: transform 0.08s, box-shadow 0.08s;
+    }
+    .btn:hover { text-decoration: none; transform: translateY(2px); box-shadow: 0 4px 0 #7d5a30; }
+    footer {
+      text-align: center;
+      color: var(--overlay0);
+      font-size: 18px;
+      margin-top: 64px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>SERVITOR AI</h1>
+      <div class="tagline">Warhammer × Catppuccin quick-chat for macOS</div>
+    </header>
+
+    <img class="screenshot" src="screenshot.png" alt="ServitorAI panel" />
+
+    <div class="cta">
+      <a class="btn" href="https://github.com/hanjoe/ServitorAI">View on GitHub</a>
+    </div>
+
+    <h2>WHAT IT IS</h2>
+    <p>
+      A keyboard-first, borderless AI chat panel that lives in your menu bar.
+      No Electron, no web UI — just Swift, AppKit, and a warm
+      <code>pi --mode rpc</code> process in the background.
+    </p>
+
+    <h2>INSTALL</h2>
+    <div class="install"><code>git clone https://github.com/hanjoe/ServitorAI.git
+cd ServitorAI
+./install.sh</code></div>
+
+    <h2>DEFAULT SHORTCUTS</h2>
+    <table>
+      <tr><th>Shortcut</th><th>Action</th></tr>
+      <tr><td>⌘⇧A</td><td>Show / hide the panel</td></tr>
+      <tr><td>↵</td><td>Submit question</td></tr>
+      <tr><td>⌃C</td><td>Copy last answer</td></tr>
+      <tr><td>⌃⇧1 … ⌃⇧0</td><td>Copy or open the numbered target in view</td></tr>
+      <tr><td>⌃R</td><td>Regenerate</td></tr>
+      <tr><td>⌃N</td><td>New chat</td></tr>
+      <tr><td>⌃[ / ⌃]</td><td>Older / newer chat</td></tr>
+      <tr><td>⌃,</td><td>Edit keybinds.conf</td></tr>
+    </table>
+
+    <h2>CONFIGURATION</h2>
+    <p>
+      Put your provider key in <code>~/.config/servitorai/config.json</code>.
+      Edit <code>~/.config/servitorai/keybinds.conf</code> with ⌘, — the app
+      reloads keybindings on save, no restart needed.
+    </p>
+
+    <footer>
+      MIT License · Fonts: Press Start 2P & VT323 (OFL)
+    </footer>
+  </div>
+</body>
+</html>
