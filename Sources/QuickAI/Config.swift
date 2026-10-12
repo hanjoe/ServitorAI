@@ -1,9 +1,48 @@
 import Foundation
 
-struct ModelOption: Codable {
+struct ModelOption: Codable, Equatable {
     var provider: String
     var modelId: String
     var label: String
+
+    /// Adapt pi's RPC Model shape to the app's persisted/favourites shape.
+    static func fromRPC(_ value: [String: Any]) -> ModelOption? {
+        guard let provider = value["provider"] as? String,
+              let modelId = value["id"] as? String else { return nil }
+        let label = (value["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? modelId
+        return ModelOption(provider: provider, modelId: modelId, label: label)
+    }
+}
+
+/// Pure model-catalog ordering/selection logic shared by startup and tests.
+enum ModelCatalog {
+    static func ordered(available: [ModelOption], favourites: [ModelOption]) -> [ModelOption] {
+        var result: [ModelOption] = []
+        for favourite in favourites {
+            guard let model = available.first(where: { $0.provider == favourite.provider && $0.modelId == favourite.modelId }),
+                  !result.contains(where: { $0.provider == model.provider && $0.modelId == model.modelId }) else { continue }
+            result.append(ModelOption(provider: model.provider, modelId: model.modelId,
+                                      label: favourite.label.isEmpty ? model.label : favourite.label))
+        }
+        for model in available where !result.contains(where: { $0.provider == model.provider && $0.modelId == model.modelId }) {
+            result.append(model)
+        }
+        return result
+    }
+
+    /// Keep the user's prior pick when still usable; otherwise prefer the
+    /// configured default, pi's current selection, then the first available.
+    static func choose(available: [ModelOption], previous: ModelOption?, configuredProvider: String,
+                       configuredModel: String, piCurrentProvider: String?, piCurrentModel: String?) -> ModelOption? {
+        func find(_ provider: String?, _ id: String?) -> ModelOption? {
+            guard let provider, let id else { return nil }
+            return available.first { $0.provider == provider && $0.modelId == id }
+        }
+        return find(previous?.provider, previous?.modelId)
+            ?? find(configuredProvider, configuredModel)
+            ?? find(piCurrentProvider, piCurrentModel)
+            ?? available.first
+    }
 }
 
 /// User-configurable settings, loaded from ~/.config/quickai/config.json.

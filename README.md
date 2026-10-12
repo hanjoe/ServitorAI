@@ -14,8 +14,7 @@ A Warhammer × Catppuccin themed macOS menu-bar AI chat app. Fast, keyboard-firs
 ## Requirements
 
 - macOS 14+
-- [pi](https://github.com/earendil-works/pi-coding-agent) installed and on your PATH
-- An API key for your chosen provider (Ollama Cloud, OpenAI, etc.)
+- [pi](https://github.com/earendil-works/pi-coding-agent) installed and configured with at least one usable model/auth provider
 
 ## Install
 
@@ -25,24 +24,41 @@ cd ServitorAI
 ./install.sh
 ```
 
-Then put your key in `~/.config/servitorai/config.json`:
+ServitorAI shares pi's existing model configuration and sign-in. In a terminal, start `pi` and run `/login` to sign in to a supported provider (for example, GitHub Copilot). Then launch ServitorAI. On first setup, ServitorAI looks for installed pi extensions that advertise a web-search tool and asks before loading one. Review the extension code and trust its source before enabling it; you can leave search off and change the choice later with **Configure Web Search…**. It asks pi which models are currently usable, puts configured favourites first, and falls back to a signed-in model if its configured default is unavailable. If no models are available, sign in or configure a provider in pi, then relaunch ServitorAI.
+
+Credentials stay in pi's own auth/configuration, such as `~/.pi/agent/auth.json`; ServitorAI does not copy OAuth tokens or implement a separate login flow. Keep pi's auth files private and never commit them.
+
+### Ollama Cloud (optional)
+
+Ollama Cloud is an OpenAI-compatible endpoint. Add it to `~/.pi/agent/models.json` if it is not already configured. Store the API key in macOS Keychain Access as a generic password with service `servitorai-ollama` and account equal to your macOS username. Then use pi's command-based key lookup in the provider config, so the key is not written in `models.json`:
 
 ```json
 {
-  "model": "ollama-cloud/deepseek-v4.1-flash",
-  "env": {
-    "OLLAMA_API_KEY": "your-key-here"
+  "providers": {
+    "ollama-cloud": {
+      "baseUrl": "https://ollama.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!security find-generic-password -s servitorai-ollama -w",
+      "models": [
+        { "id": "deepseek-v4.1-flash:cloud" },
+        { "id": "deepseek-v4-pro:cloud" }
+      ]
+    }
   }
 }
 ```
 
-Or, if you use [Proton Pass](https://proton.me/pass) with `pass-cli` installed and logged in, reference a vault item instead of a plaintext key:
+Pi runs the Keychain lookup when it needs the key. macOS may ask to allow pi to access that Keychain item; review the prompt and choose **Always Allow** only if you trust the installed pi binary. This setup is optional—any provider already configured and authenticated in pi can be used.
+
+### Optional Proton Pass integration
+
+Existing ServitorAI configs may still use `pass://` references if `pass-cli` is installed and logged in:
 
 ```json
 "env": { "OLLAMA_API_KEY": "pass://YourVault/YourItemTitle/password" }
 ```
 
-ServitorAI resolves `pass://` references once at launch via `pass-cli`, and only the resolved value is passed to the pi child process — the key never touches config.json or disk. The first time it runs, macOS will show a keychain permission prompt; click **Always Allow**.
+ServitorAI resolves these once at startup and passes the resolved value only to the pi child. Proton Pass is not required; omit `env` when using pi's own authentication/configuration.
 
 Load the LaunchAgent if you want it auto-starting at login:
 
@@ -76,11 +92,11 @@ All shortcuts are editable in `~/.config/servitorai/keybinds.conf` (open with �
 
 ## Agent tool boundaries
 
-The panel starts as a conversational chat, not an autonomous coding agent. Its child process is limited to read-only file reading/listing and DuckDuckGo `web_search` (when the user's `ddgr-search` pi extension is installed). Shell, file edits/writes, MCP, and Orbit are disabled.
+The panel starts as a conversational chat, not an autonomous coding agent. Its child process is limited to read-only file reading/listing and, optionally, `web_search` when an installed pi search extension is explicitly approved. pi does not provide a general web-search tool in its default built-in tools; without an installed and approved search extension, ServitorAI simply runs without web search. Shell, file edits/writes, MCP, and Orbit are disabled.
 
 ## Configuration
 
-See `config.example.json` for the full shape. Only the `OLLAMA_API_KEY` (or your provider's equivalent) is required.
+See `config.example.json` for app preferences. Its `provider`/`model` and `models` entries are preferences/favourites, not credentials or a required provider install; pi's authenticated model catalog determines the actual choices. You can change the favourite order in `config.json`. The app does not require an `OLLAMA_API_KEY` when another pi provider is available.
 
 ## License
 

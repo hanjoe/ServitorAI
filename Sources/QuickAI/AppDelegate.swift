@@ -24,13 +24,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     private var rpcGaveUp = false
     /// False until the first pi child has been launched (secrets resolve first).
     private var rpcLaunched = false
-    private var currentModelIndex = 0
+    private var availableModels: [ModelOption] = []
+    /// Last model selected in ServitorAI, retained across pi child restarts.
+    private var preferredModel: ModelOption?
+    private var currentModelIndex = -1
     private var lastShownFailure: String?
     /// Proton Pass resolution result — computed once at launch, reused by
     /// every pi child restart so pass-cli is never invoked twice.
     private var secretsEnv: [String: String] = [:]
     private var secretsPassKeys: Set<String> = []
     private var secretsFailed: [String] = []
+    private var approvedSearchExtension: SearchExtensionCandidate?
+    private let searchSetupPromptedKey = "webSearchSetupPrompted"
+    private let searchExtensionPathKey = "webSearchExtensionPath"
+    private let searchExtensionToolKey = "webSearchExtensionTool"
+    private let searchExtensionFingerprintKey = "webSearchExtensionFingerprint"
 
     // MARK: - Bootstrap
 
@@ -41,7 +49,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         buildPanel()
         buildHotKey()
         buildKeyMonitor()
-        resolveInitialModelIndex()
         // The client exists immediately (commands queue inside it); the pi
         // process starts once secrets are resolved, off the main thread.
         rpc = PiRpcClient(config: config)
@@ -57,8 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     /// main thread: resolve in the background, then launch pi.
     private func resolveSecretsThenStartRpc() {
         guard let env = config.env, !env.isEmpty else {
-            startRpc()
-            warnIfKeyMissing()
+            prepareSearchExtension { [weak self] in self?.startRpc() }
             return
         }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -71,10 +77,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
                 if !self.secretsFailed.isEmpty {
                     self.panel.showNotice("⚠ Proton Pass: couldn't resolve \(self.secretsFailed.joined(separator: ", ")) — run `pass-cli login` or fix the pass:// reference in config.json.")
                 }
-                self.startRpc()
-                self.warnIfKeyMissing()
+                self.prepareSearchExtension { [weak self] in self?.startRpc() }
             }
         }
+    }
+
+    /// Use a previously approved extension only while its source file still
+    /// matches the fingerprint the user approved. First launch asks before any
+    /// search extension code is loaded into the chat process.
+    private func prepareSearchExtension(completion: @escaping () -> Void) {
+        let defaults = UserDefaults.standard
+        let savedPath = defaults.string(forKey: searchExtensionPathKey)
+        let savedTool = defaults.string(forKey: searchExtensionToolKey)
+        let savedFingerprint = defaults.string(forKey: searchExtensionFingerprintKey)
+        if let savedPath, let savedTool, let savedFingerprint,
+           SearchExtensionCandidate.fingerprintOfFile(at: savedPath) == savedFingerprint {
+            approvedSearchExtension = SearchExtensionCandidate(path: savedPath, toolName: savedTool,
+                                                               description: "Previously approved pi web-search extension.",
+                                                               fingerprint: savedFingerprint)
+            completion()
+            return
+        }
+        if savedPath != nil || !defaults.bool(forKey: searchSetupPromptedKey) {
+            configureSearchExtension(initial: true) { _ in completion() }
+        } else {
+            approvedSearchExtension = nil
+            completion()
+        }
+    }
+
+    /// Presents candidate extensions without executing them. Consent is stored
+    /// per source fingerprint, and the prompt explains that extensions execute
+    /// with the same user permissions as pi.
+    private func configureSearchExtension(initial: Bool, completion: @escaping (Bool) -> Void) {
+        let candidates = SearchExtensionDiscovery.discover()
+        guard !candidates.isEmpty else {
+            if initial {
+                UserDefaults.standard.set(true, forKey: searchSetupPromptedKey)
+                panel.showNotice("Web search is off: no pi extension advertising a search tool was found. You can add one and choose Configure Web Search… later.")
+            } else {
+                panel.showNotice("No pi extension advertising a web-search tool was found.")
+            }
+            completion(false)
+            return
+        }
+
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 26), pullsDown: false)
+        for candidate in candidates {
+            picker.addItem(withTitle: candidate.displayName)
+        }
+        let alert = NSAlert()
+        alert.messageText = "Allow a pi web-search extension in ServitorAI?"
+        alert.informativeText = "The selected extension will run inside ServitorAI's pi process with your user permissions. Review its source and trust its author before enabling it. Only its search-named tool will be exposed to the model."
+        alert.accessoryView = picker
+        alert.addButton(withTitle: "Enable Selected Extension")
+        alert.addButton(withTitle: "Not Now")
+        let response = alert.runModal()
+        UserDefaults.standard.set(true, forKey: searchSetupPromptedKey)
+        guard response == .alertFirstButtonReturn,
+              candidates.indices.contains(picker.indexOfSelectedItem) else {
+            if initial { approvedSearchExtension = nil }
+            completion(false)
+            return
+        }
+        let candidate = candidates[picker.indexOfSelectedItem]
+        UserDefaults.standard.set(candidate.path, forKey: searchExtensionPathKey)
+        UserDefaults.standard.set(candidate.toolName, forKey: searchExtensionToolKey)
+        UserDefaults.standard.set(candidate.fingerprint, forKey: searchExtensionFingerprintKey)
+        approvedSearchExtension = candidate
+        completion(true)
     }
 
     /// Accessory apps have no menu bar, so ⌘C/⌘V/⌘X/⌘A/⌘Z never reach text
@@ -120,8 +191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         bind("Next Chat (alt)", #selector(actNextChat), .nextChatAlt)
         bind("Cycle Model", #selector(actCycleModel), .cycleModel)
         bind("Model Picker", #selector(actShowModelPicker), .modelPicker)
-        for i in 0..<min(9, config.models.count) {
-            let item = NSMenuItem(title: "Model \(i + 1): \(config.models[i].label)", action: #selector(selectModelByTag(_:)), keyEquivalent: String(i + 1))
+        let searchSetup = NSMenuItem(title: "Configure Web Search…", action: #selector(actConfigureWebSearch), keyEquivalent: "")
+        searchSetup.target = self
+        appMenu.addItem(searchSetup)
+        for i in 0..<min(9, availableModels.count) {
+            let item = NSMenuItem(title: "Model \(i + 1): \(availableModels[i].label)", action: #selector(selectModelByTag(_:)), keyEquivalent: String(i + 1))
             item.keyEquivalentModifierMask = [.control]
             item.target = self
             item.tag = i
@@ -178,36 +252,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     private func registerDebugHooks() {}
     #endif
 
-    private func resolveInitialModelIndex() {
-        if let idx = config.models.firstIndex(where: { $0.modelId == config.model && $0.provider == config.provider }) {
-            currentModelIndex = idx
-        }
-    }
-
-    /// Warn up front when the default provider cannot authenticate.
-    private func warnIfKeyMissing() {
-        guard config.provider == "ollama-cloud" else { return }
-        let fromEnv = ProcessInfo.processInfo.environment["OLLAMA_API_KEY"]
-        let fromPass = secretsPassKeys.contains("OLLAMA_API_KEY") ? secretsEnv["OLLAMA_API_KEY"] : nil
-        let effective = fromEnv ?? fromPass ?? (secretsFailed.contains("OLLAMA_API_KEY") ? nil : secretsEnv["OLLAMA_API_KEY"])
-        if effective == nil || effective == "PASTE_YOUR_KEY_HERE" {
-            panel.showNotice("⚠ OLLAMA_API_KEY is missing — set it in ~/.config/servitorai/config.json, either directly or as a pass:// vault/item/field reference, or press ⌘M and pick Claude Haiku (no key needed).")
-        }
-    }
-
     private func startRpc() {
         // The first launch reuses the client created at startup (it may hold
         // queued commands); every restart needs a fresh Process.
         if rpcLaunched {
-            let carriedModel = rpc.selectedModel   // a restarted pi must not fall back to the config default
+            // Model choice is retained by AppDelegate and re-applied only after
+            // pi's authenticated model catalog has been loaded.
             rpc = PiRpcClient(config: config)
             rpc.delegate = self
-            rpc.selectedModel = carriedModel
         }
         rpcLaunched = true
-        rpc.start(resolvedEnv: secretsEnv, passKeys: secretsPassKeys)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            self?.rpc.refreshState()
+        let client = rpc!
+        client.start(resolvedEnv: secretsEnv, passKeys: secretsPassKeys, searchExtension: approvedSearchExtension)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak client] in
+            guard let self, let client, self.rpc === client else { return }
+            self.loadPiModels(using: client)
         }
     }
 
@@ -319,7 +378,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
 
     private func modelMenu() -> NSMenu {
         let menu = NSMenu()
-        for (i, m) in config.models.enumerated() {
+        guard !availableModels.isEmpty else {
+            let item = NSMenuItem(title: "No pi models available — sign in with pi /login", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            return menu
+        }
+        for (i, m) in availableModels.enumerated() {
             let item = NSMenuItem(title: m.label, action: #selector(selectModel(_:)),
                                   keyEquivalent: i < 9 ? String(i + 1) : "")
             item.keyEquivalentModifierMask = [.command]
@@ -482,6 +547,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         return out
     }
     @objc private func actShowModelPicker() { panel.showModelMenu() }
+    @objc private func actConfigureWebSearch() {
+        configureSearchExtension(initial: false) { [weak self] changed in
+            guard let self, changed else { return }
+            self.panel.showNotice("✓ Web-search choice saved. Quit and relaunch ServitorAI to apply it.")
+        }
+    }
     @objc private func actShowHistory() { panel.showHistoryMenu() }
     @objc private func actFocusInput() { panel.focusInput() }
     @objc private func actNewChat() { newChat() }
@@ -509,41 +580,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     // MARK: - Models
 
     private func currentModelLabel() -> String {
-        config.models.indices.contains(currentModelIndex) ? config.models[currentModelIndex].label : config.model
+        availableModels.indices.contains(currentModelIndex) ? availableModels[currentModelIndex].label : "Loading pi models…"
     }
 
-    private func switchModel(_ m: ModelOption) {
+    private func setCurrentModel(_ model: ModelOption, on client: PiRpcClient) {
+        preferredModel = model
+        client.selectedModel = (model.provider, model.modelId)
+        currentModelIndex = availableModels.firstIndex { $0.provider == model.provider && $0.modelId == model.modelId } ?? -1
+        panel.setModelLabel(model.label)
+        statusItem.button?.toolTip = "ServitorAI · \(model.label)"
+        buildMainMenu()
+    }
+
+    private func loadPiModels(using client: PiRpcClient) {
+        client.getAvailableModels { [weak self, weak client] models in
+            guard let self, let client, self.rpc === client else { return }
+            guard let models else {
+                self.panel.showNotice("⚠ Couldn't read pi's available models. Check the pi process and ~/.config/servitorai/pi.log.")
+                return
+            }
+            self.availableModels = ModelCatalog.ordered(available: models, favourites: self.config.models)
+            self.buildMainMenu()
+            client.refreshState { [weak self, weak client] state in
+                guard let self, let client, self.rpc === client else { return }
+                let current = state?["model"] as? [String: Any]
+                let hadPreviousPick = self.preferredModel != nil
+                let configuredAvailable = self.availableModels.contains {
+                    $0.provider == self.config.provider && $0.modelId == self.config.model
+                }
+                let target = ModelCatalog.choose(
+                    available: self.availableModels,
+                    previous: self.preferredModel,
+                    configuredProvider: self.config.provider,
+                    configuredModel: self.config.model,
+                    piCurrentProvider: current?["provider"] as? String,
+                    piCurrentModel: current?["id"] as? String
+                )
+                guard let target else {
+                    self.currentModelIndex = -1
+                    self.panel.setModelLabel("No model available")
+                    self.statusItem.button?.toolTip = "ServitorAI · No model available"
+                    self.panel.showNotice("⚠ No models available. Sign in with `pi` → `/login`, or configure an API-key provider in pi's models.json.")
+                    self.buildMainMenu()
+                    return
+                }
+                let matchesCurrent = current?["provider"] as? String == target.provider
+                    && current?["id"] as? String == target.modelId
+                if matchesCurrent {
+                    self.setCurrentModel(target, on: client)
+                } else {
+                    self.switchModel(target, showToast: false)
+                }
+                if !hadPreviousPick && !configuredAvailable {
+                    self.panel.showNotice("ℹ Using \(target.label) — the configured default isn't currently available in pi.")
+                }
+            }
+        }
+    }
+
+    private func switchModel(_ m: ModelOption, showToast: Bool = true) {
         Debug.log("action: switchModel \(m.provider)/\(m.modelId)")
         let previousIndex = currentModelIndex
-        if let idx = config.models.firstIndex(where: { $0.modelId == m.modelId && $0.provider == m.provider }) {
-            currentModelIndex = idx
-        }
         panel.setModelLabel(m.label)
         statusItem.button?.toolTip = "ServitorAI · \(m.label)"
-        rpc.setModel(provider: m.provider, modelId: m.modelId) { [weak self] data in
-            guard let self else { return }
+        let client = rpc!
+        client.setModel(provider: m.provider, modelId: m.modelId) { [weak self, weak client] data in
+            guard let self, let client, self.rpc === client else { return }
             if data == nil {
-                // pi rejected the switch: keep the label truthful about the model pi is really using.
-                if self.currentModelIndex == (self.config.models.firstIndex(where: { $0.modelId == m.modelId && $0.provider == m.provider }) ?? -1) {
-                    self.currentModelIndex = previousIndex
-                    self.panel.setModelLabel(self.currentModelLabel())
-                    self.statusItem.button?.toolTip = "ServitorAI · \(self.currentModelLabel())"
-                }
-                self.panel.toast("Model switch failed")
+                self.currentModelIndex = previousIndex
+                self.panel.setModelLabel(self.currentModelLabel())
+                self.statusItem.button?.toolTip = "ServitorAI · \(self.currentModelLabel())"
+                if showToast { self.panel.toast("Model switch failed") }
             } else {
-                self.panel.toast("Model: \(m.label)")
+                self.setCurrentModel(m, on: client)
+                if showToast { self.panel.toast("Model: \(m.label)") }
             }
         }
     }
 
     private func cycleModel() {
-        guard !config.models.isEmpty else { return }
-        switchModel(config.models[(currentModelIndex + 1) % config.models.count])
+        guard !availableModels.isEmpty else { return }
+        let next = currentModelIndex < 0 ? 0 : (currentModelIndex + 1) % availableModels.count
+        switchModel(availableModels[next])
     }
 
     private func pickModel(_ index: Int) {
-        guard config.models.indices.contains(index) else { return }
-        switchModel(config.models[index])
+        guard availableModels.indices.contains(index) else { return }
+        switchModel(availableModels[index])
     }
 
     // MARK: - Chat logic
@@ -601,7 +724,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     private func submit(text: String) {
-        Debug.log("submit(chars: \(text.count)) provider=\(config.provider) model=\(config.model)")
+        let modelDescription = preferredModel.map { "\($0.provider)/\($0.modelId)" } ?? "unavailable"
+        Debug.log("submit(chars: \(text.count)) model=\(modelDescription)")
         if rpcGaveUp {
             // The user is trying again after we stopped auto-restarting.
             rpcGaveUp = false

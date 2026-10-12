@@ -59,30 +59,38 @@ final class PiRpcClient {
 
     // MARK: - Process lifecycle
 
-    func start(resolvedEnv: [String: String]?, passKeys: Set<String>) {
+    func start(resolvedEnv: [String: String]?, passKeys: Set<String>, searchExtension: SearchExtensionCandidate?) {
         self.resolvedEnv = resolvedEnv ?? config.env
         self.passKeys = passKeys
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/pi")
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let ddgrExtension = home.appendingPathComponent(".pi/agent/extensions/ddgr-search.ts")
         let extensionsDir = Bundle.main.resourceURL?.appendingPathComponent("Extensions")
         let listExtension = extensionsDir?.appendingPathComponent("list-files.ts")
         let guardExtension = extensionsDir?.appendingPathComponent("path-guard.ts")
         func exists(_ url: URL?) -> Bool { url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false }
-        let hasDDGR = FileManager.default.fileExists(atPath: ddgrExtension.path)
         // Fail closed: file tools are only enabled together with the path guard
         // that blocks credential stores (~/.ssh, ~/.config/servitorai, .env …).
         let hasGuard = exists(guardExtension)
         let hasList = hasGuard && exists(listExtension)
+        let activeSearchExtension = searchExtension.flatMap { candidate -> SearchExtensionCandidate? in
+            guard candidate.toolName.range(of: #"^[A-Za-z][A-Za-z0-9_-]*$"#, options: .regularExpression) != nil,
+                  SearchExtensionCandidate.fingerprintOfFile(at: candidate.path) == candidate.fingerprint else { return nil }
+            return candidate
+        }
         var toolNames: [String] = []
         if hasGuard { toolNames.append("read") }
         if hasList { toolNames.append("list_files") }
-        if hasDDGR { toolNames.append("web_search") }
+        if let activeSearchExtension, !toolNames.contains(activeSearchExtension.toolName) {
+            toolNames.append(activeSearchExtension.toolName)
+        }
         let availableTools = toolNames.joined(separator: ",")
         let basePrompt = config.systemPrompt.contains("You have no tools") ? AppConfig.defaultSystemPrompt : config.systemPrompt
-        let toolPrompt = toolNames.isEmpty
-            ? "You have no tools. Do not run commands or modify files."
-            : "Available read-only tools: " + toolNames.joined(separator: ", ") + ". Use them only when the user's request needs local or current information. Do not run commands or modify files."
+        let toolPrompt: String
+        if toolNames.isEmpty {
+            toolPrompt = "You have no tools. Do not run commands or modify files."
+        } else {
+            let searchInstruction = activeSearchExtension.map { " Use \($0.toolName) only when web search is needed." } ?? ""
+            toolPrompt = "Available tools: " + toolNames.joined(separator: ", ") + ". Use them only when the user's request needs local or current information. Do not run commands or modify files." + searchInstruction
+        }
         var arguments = [
             "--mode", "rpc",
             // Narrow read-only tool allowlist and only explicit, vetted extensions.
@@ -90,16 +98,17 @@ final class PiRpcClient {
             "--no-extensions", "--no-skills", "--no-prompt-templates",
             "--no-context-files", "--no-mcp", "--no-themes",
             "--thinking", config.thinking,
-            "--provider", selectedModel?.provider ?? config.provider,
-            "--model", selectedModel?.modelId ?? config.model,
+            // Let pi select from its own configured models and auth. App
+            // preferences are applied only after get_available_models confirms
+            // that the provider/model is available to this user.
             "--system-prompt", basePrompt + "\n" + toolPrompt,
             "--session-dir", SessionStore.dir.path,
         ]
         if hasGuard, let guardExtension { arguments += ["--extension", guardExtension.path] }
-        if hasDDGR { arguments += ["--extension", ddgrExtension.path] }
         if hasList, let listExtension { arguments += ["--extension", listExtension.path] }
+        if let activeSearchExtension { arguments += ["--extension", activeSearchExtension.path] }
         process.arguments = arguments
-        Debug.log("pi spawn: tools=\(availableTools.isEmpty ? "none" : availableTools) guard=\(hasGuard) ddgr=\(hasDDGR) list=\(hasList)")
+        Debug.log("pi spawn: tools=\(availableTools.isEmpty ? "none" : availableTools) guard=\(hasGuard) list=\(hasList) search=\(activeSearchExtension?.toolName ?? "off")")
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         var env = ProcessInfo.processInfo.environment
         // Don't let an enclosing pi session (e.g. when launched from a pi shell)
@@ -374,6 +383,19 @@ final class PiRpcClient {
     func switchSession(path: String, completion: (() -> Void)? = nil) {
         send(["type": "switch_session", "sessionPath": path]) { [weak self] _ in
             self?.refreshState { _ in completion?() }
+        }
+    }
+
+    /// Models pi can currently serve with this user's auth/configuration.
+    func getAvailableModels(completion: @escaping ([ModelOption]?) -> Void) {
+        send(["type": "get_available_models"]) { result in
+            guard case .success(let response) = result,
+                  let data = response["data"] as? [String: Any],
+                  let rawModels = data["models"] as? [[String: Any]] else {
+                completion(nil)
+                return
+            }
+            completion(rawModels.compactMap(ModelOption.fromRPC))
         }
     }
 
