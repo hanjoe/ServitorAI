@@ -302,7 +302,13 @@ enum Markdown {
                 attrs[.font] = T.body(font.pointSize * 0.92)
                 attrs[.foregroundColor] = T.inlineCode
                 attrs[.backgroundColor] = T.codeBg
-                if let codeLink { attrs[.link] = codeLink(piece) }
+                let candidate = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let url = URL(string: candidate), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil {
+                    // A URL in backticks remains an openable link, not a copy-code target.
+                    attrs[.link] = url
+                } else if let codeLink {
+                    attrs[.link] = codeLink(piece)
+                }
             }
             if let url = run.link { attrs[.link] = url }
             result.append(NSAttributedString(string: piece, attributes: attrs))

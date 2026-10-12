@@ -24,6 +24,8 @@ mkdir -p "$APP/Contents/Resources"
 cp "$HERE/Assets/servitor-skull.png" "$APP/Contents/Resources/servitor-skull.png"
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$HERE"/Assets/Fonts/*.ttf "$HERE"/Assets/Fonts/OFL-*.txt "$APP/Contents/Resources/Fonts/"
+mkdir -p "$APP/Contents/Resources/Extensions"
+cp "$HERE/Assets/Extensions/list-files.ts" "$APP/Contents/Resources/Extensions/list-files.ts"
 
 echo "==> Installing LaunchAgent"
 mkdir -p "$HOME/Library/LaunchAgents"
@@ -47,4 +49,4 @@ echo
 echo "   Or launch it now (Finder/Spotlight: 'ServitorAI', or):"
 echo "       open \"$APP\""
 echo
-echo "   Hotkey: ⌘⇧A toggle · ⌘M model · ⌘⇧C copy · ⌘N new · ⌘[ ⌘] history"
+echo "   Hotkey: ⌘⇧A toggle · ⌃-based shortcuts (see ⌘, keybinds config)"

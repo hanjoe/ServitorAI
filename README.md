@@ -52,16 +52,23 @@ All shortcuts are editable in `~/.config/servitorai/keybinds.conf` (open with �
 | ↵ | Submit question |
 | ⌃C | Copy last answer |
 | ⌃⌥C | Copy last fenced code block |
-| ⌃⇧1 … ⌃⇧0 | Copy/open the numbered target visible in the viewport |
+| ⌃⇧1 … ⌃⇧0 | Copy code or open link at that visible target number |
+| ⌃/ | Search transcript; n/N next/previous match |
+| V, then j/k, y | Select lines, then copy in transcript copy mode |
+| PgUp / PgDn | Scroll transcript
 | ⌃↵ / ⌘↵ | Paste answer to the previous app |
 | ⌃R | Regenerate |
 | ⌃N | New chat |
 | ⌃[ / ⌃] | Older / newer chat |
 | ⌃M / ⌃1-9 | Cycle / pick model |
-| ⌃, | Open keybinds config in `$EDITOR` |
+| ⌘, | Open keybinds config in `$EDITOR` |
 | Esc / ⌘W | Hide panel |
 
 `keybinds.conf` is a plain text file with comments. Edit, save, and the app reloads immediately.
+
+## Agent tool boundaries
+
+The panel starts as a conversational chat, not an autonomous coding agent. Its child process is limited to read-only file reading/listing and DuckDuckGo `web_search` (when the user's `ddgr-search` pi extension is installed). Shell, file edits/writes, MCP, and Orbit are disabled.
 
 ## Configuration
 

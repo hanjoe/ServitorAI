@@ -66,6 +66,11 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
     private var rebuildScheduled = false
     private var layoutWidth: CGFloat = 0
     private var toastToken = 0
+    private var searchingTranscript = false
+    private var copyMode = false
+    private var searchMatches: [NSRange] = []
+    private var searchMatchIndex = 0
+    private var lineSelectionAnchor: NSRange?
 
     static let defaultSize = NSSize(width: 960, height: 700)
 
@@ -83,7 +88,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
             "\(k.display(for: .cycleModel)) model",
             "⌃1-9 pick model",
             "⌃⇧1-0 copy/open in view",
-            "esc close",
+            "⌃/ search · PgUp/PgDn scroll · Esc close",
         ].joined(separator: " · ")
     }
 
@@ -101,7 +106,6 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
 
     override init() {
         // NSTextView.scrollableTextView() wires up wrapping / resizing correctly
-        // (a bare NSTextView has an unbounded container and never wraps).
         let sv = NSTextView.scrollableTextView()
         scrollView = sv
         outputView = sv.documentView as! NSTextView
@@ -686,6 +690,125 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         return row
     }
 
+    // MARK: - Transcript search / copy mode
+
+    func beginCopySearch() {
+        searchingTranscript = true
+        copyMode = false
+        inputField.stringValue = ""
+        inputField.placeholderAttributedString = NSAttributedString(string: "/ Search transcript · Enter", attributes: [
+            .font: T.inputFont, .foregroundColor: T.machineTeal,
+        ])
+        focusInput()
+    }
+
+    private func restoreInputPlaceholder() {
+        inputField.placeholderAttributedString = NSAttributedString(string: "Ask the servitor…", attributes: [
+            .font: T.inputFont, .foregroundColor: T.overlay0,
+        ])
+    }
+
+    private func runTranscriptSearch() {
+        let query = inputField.stringValue
+        searchingTranscript = false
+        inputField.stringValue = ""
+        restoreInputPlaceholder()
+        searchMatches.removeAll()
+        searchMatchIndex = 0
+        lineSelectionAnchor = nil
+        guard !query.isEmpty else { focusInput(); return }
+        let ns = outputView.string as NSString
+        var cursor = 0
+        while cursor < ns.length {
+            let found = ns.range(of: query, options: [.caseInsensitive], range: NSRange(location: cursor, length: ns.length - cursor))
+            if found.location == NSNotFound { break }
+            searchMatches.append(found)
+            cursor = NSMaxRange(found)
+        }
+        guard !searchMatches.isEmpty else { toast("No matches"); focusInput(); return }
+        copyMode = true
+        selectSearchMatch(0)
+        panel.makeFirstResponder(outputView)
+        toast("\(searchMatches.count) matches · n/N next/previous · V line select · y copy · q quit")
+    }
+
+    private func selectSearchMatch(_ index: Int) {
+        guard !searchMatches.isEmpty else { return }
+        searchMatchIndex = (index + searchMatches.count) % searchMatches.count
+        let range = searchMatches[searchMatchIndex]
+        outputView.setSelectedRange(range)
+        outputView.scrollRangeToVisible(range)
+        outputView.showFindIndicator(for: range)
+    }
+
+    func handleCopyModeKey(_ event: NSEvent) -> Bool {
+        if searchingTranscript && event.keyCode == 53 {
+            searchingTranscript = false
+            inputField.stringValue = ""
+            restoreInputPlaceholder()
+            focusInput()
+            return true
+        }
+        guard copyMode else { return false }
+        let key = event.charactersIgnoringModifiers ?? ""
+        let shifted = event.modifierFlags.contains(.shift)
+        switch event.keyCode {
+        case 53: exitCopyMode(); return true // Escape
+        case 116: _ = scrollTranscriptPage(116); return true
+        case 121: _ = scrollTranscriptPage(121); return true
+        default: break
+        }
+        switch key {
+        case "q": exitCopyMode()
+        case "n": selectSearchMatch(searchMatchIndex + (shifted ? -1 : 1))
+        case "v":
+            guard shifted else { break }
+            let ns = outputView.string as NSString
+            lineSelectionAnchor = ns.lineRange(for: outputView.selectedRange())
+            outputView.setSelectedRange(lineSelectionAnchor!)
+            toast("Line mode · j/k extend · y copy · q quit")
+        case "j", "k", "\u{F700}", "\u{F701}":
+            guard let anchor = lineSelectionAnchor else { return true }
+            let ns = outputView.string as NSString
+            let current = ns.lineRange(for: outputView.selectedRange())
+            let location = key == "j" || key == "\u{F701}" ? min(ns.length, NSMaxRange(current)) : max(0, current.location - 1)
+            let next = ns.lineRange(for: NSRange(location: location, length: 0))
+            let lo = min(anchor.location, next.location)
+            let hi = max(NSMaxRange(anchor), NSMaxRange(next))
+            outputView.setSelectedRange(NSRange(location: lo, length: hi - lo))
+            outputView.scrollRangeToVisible(next)
+        case "y", "\r", "\n":
+            let range = outputView.selectedRange()
+            guard range.length > 0 else { return true }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString((outputView.string as NSString).substring(with: range), forType: .string)
+            toast("Selection copied")
+            exitCopyMode()
+        default: break
+        }
+        return true
+    }
+
+    private func exitCopyMode() {
+        copyMode = false
+        searchingTranscript = false
+        lineSelectionAnchor = nil
+        outputView.setSelectedRange(NSRange(location: 0, length: 0))
+        focusInput()
+    }
+
+    func scrollTranscriptPage(_ keyCode: UInt16) -> Bool {
+        guard keyCode == 116 || keyCode == 121 else { return false }
+        let clip = scrollView.contentView
+        guard let doc = scrollView.documentView else { return true }
+        let delta = max(80, clip.bounds.height * 0.9) * (keyCode == 116 ? -1 : 1)
+        let maxY = max(0, doc.bounds.height - clip.bounds.height)
+        let origin = NSPoint(x: clip.bounds.origin.x, y: min(max(clip.bounds.origin.y + delta, 0), maxY))
+        clip.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clip)
+        return true
+    }
+
     // MARK: - Typing / focus helpers
 
     /// True when the (read-only) transcript owns keyboard focus.
@@ -733,6 +856,17 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
     // MARK: - NSTextFieldDelegate
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if searchingTranscript && commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            runTranscriptSearch()
+            return true
+        }
+        if searchingTranscript && commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            searchingTranscript = false
+            inputField.stringValue = ""
+            restoreInputPlaceholder()
+            focusInput()
+            return true
+        }
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
             let text = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return true }
@@ -788,8 +922,7 @@ extension ChatPanel {
     }
 }
 
-/// A tiny numbered square pinned next to a visible copy target.
-/// Brass = code block (⌃⇧n), machine-teal = web link (⌃⌥n).
+/// A small brass shortcut chip beside a visible code/link target (⌃⇧n).
 /// Purely informational — it never swallows clicks or key events.
 private final class CodeBadge: NSView {
     private let number: Int

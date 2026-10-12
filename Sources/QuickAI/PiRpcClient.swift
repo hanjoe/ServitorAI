@@ -38,19 +38,29 @@ final class PiRpcClient {
 
     func start() {
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/pi")
-        process.arguments = [
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let ddgrExtension = home.appendingPathComponent(".pi/agent/extensions/ddgr-search.ts")
+        let listExtension = Bundle.main.resourceURL?.appendingPathComponent("Extensions/list-files.ts")
+        let hasDDGR = FileManager.default.fileExists(atPath: ddgrExtension.path)
+        let hasList = listExtension.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        let availableTools = (["read"] + (hasList ? ["list_files"] : []) + (hasDDGR ? ["web_search"] : [])).joined(separator: ",")
+        let basePrompt = config.systemPrompt.contains("You have no tools") ? AppConfig.defaultSystemPrompt : config.systemPrompt
+        let toolPrompt = "Available read-only tools: read" + (hasList ? ", list_files" : "") + (hasDDGR ? ", web_search" : "") + ". Use them only when the user's request needs local or current information. Do not run commands, modify files, or use Orbit."
+        var arguments = [
             "--mode", "rpc",
-            // Pure chat: no tools and nothing from the user's pi setup. Verified
-            // empirically: with these flags pi loads 0 extensions / 0 commands.
-            "--no-tools",
+            // Narrow read-only tool allowlist and only explicit, vetted extensions.
+            "--tools", availableTools,
             "--no-extensions", "--no-skills", "--no-prompt-templates",
             "--no-context-files", "--no-mcp", "--no-themes",
             "--thinking", config.thinking,
             "--provider", config.provider,
             "--model", config.model,
-            "--system-prompt", config.systemPrompt,
+            "--system-prompt", basePrompt + "\n" + toolPrompt,
             "--session-dir", SessionStore.dir.path,
         ]
+        if hasDDGR { arguments += ["--extension", ddgrExtension.path] }
+        if hasList, let listExtension { arguments += ["--extension", listExtension.path] }
+        process.arguments = arguments
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         var env = ProcessInfo.processInfo.environment
         // Don't let an enclosing pi session (e.g. when launched from a pi shell)

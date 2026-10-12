@@ -56,6 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         appMenu.addItem(.separator())
         bind("Copy Answer", #selector(actCopyAnswer), .copyAnswer)
         bind("Copy Last Code Block", #selector(actCopyCode), .copyCode)
+        let search = NSMenuItem(title: "Search Transcript", action: #selector(actCopySearch), keyEquivalent: "/")
+        search.keyEquivalentModifierMask = [.control]
+        search.target = self
+        appMenu.addItem(search)
         // ⌃⇧1-0 act on the n-th copyable/openable target visible in the
         // viewport: code blocks/inline code copy, web links open.
         for n in 1...10 {
@@ -200,6 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     /// and routing typed characters to the input box.
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
         guard panel.isVisible else { return event }
+        if panel.handleCopyModeKey(event) { return nil }
+        if panel.scrollTranscriptPage(event.keyCode) { return nil }
         if event.keyCode == 53 && !event.modifierFlags.contains(.command) {
             cancelOrAbort(); return nil                                     // Esc
         }
@@ -615,6 +621,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     @objc private func actVisibleTarget(_ sender: NSMenuItem) {
         panel.invokeNumberedTarget(sender.tag)
     }
+
+    @objc private func actCopySearch() { panel.beginCopySearch() }
 
     /// ⌘↵ — copy the answer, return to the app you came from, and paste it
     /// there (needs the Accessibility permission to send ⌘V).
