@@ -77,10 +77,11 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
             "\(k.display(for: .copyAnswer)) copy",
             "\(k.display(for: .copyCode)) code",
             "\(k.display(for: .regenerate)) retry",
-            "\(k.display(for: .newChat)) new",
+            "\(k.display(for: .newChat)) new chat",
+            "\(k.display(for: .prevChat)) older chat",
+            "\(k.display(for: .nextChat)) newer chat",
             "\(k.display(for: .cycleModel)) model",
-            "⌃1-9 pick",
-            "\(k.display(for: .prevChat))/\(k.display(for: .nextChat)) chats",
+            "⌃1-9 pick model",
             "esc close",
         ].joined(separator: " · ")
     }
