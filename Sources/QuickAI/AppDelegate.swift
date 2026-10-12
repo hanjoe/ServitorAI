@@ -303,6 +303,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         menu.addItem(.separator())
         add("Focus Input", #selector(actFocusInput), .focusInput)
         add("Settings…", #selector(actSettings), .settings)
+        let reload = NSMenuItem(title: "Reload Keybinds", action: #selector(actReloadKeybinds), keyEquivalent: "")
+        reload.target = self
+        menu.addItem(reload)
         add("Hide", #selector(actHide), .hide)
         panel.popUpMenu(menu)
     }
@@ -320,7 +323,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     }
 
     @objc private func actShowActions() { showActionsMenu() }
-    @objc private func actSettings() { SettingsWindowController.shared.show() }
+    @objc private func actSettings() { openKeybindsConfigInEditor() }
+    @objc private func actReloadKeybinds() { Keymap.shared.reloadFromDisk(); panel.toast("Keybinds reloaded") }
+
+    /// Opens ~/.config/servitorai/keybinds.conf in the user's terminal editor
+    /// (Ghostty running $EDITOR/$VISUAL, falling back to nvim, then to the
+    /// OS-default handler for the file). Edits hot-reload automatically.
+    private func openKeybindsConfigInEditor() {
+        let path = Keymap.configPath.path
+        let editor = ProcessInfo.processInfo.environment["EDITOR"]
+            ?? ProcessInfo.processInfo.environment["VISUAL"]
+            ?? "nvim"
+        Debug.log("settings: opening \(path) via ghostty -e \(editor)")
+
+        let ghostty = "/Applications/Ghostty.app"
+        guard FileManager.default.fileExists(atPath: ghostty) else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            return
+        }
+        // Ghostty's CLI docs: launching the terminal directly isn't supported
+        // on macOS — `open -na Ghostty --args -e <cmd>` is the documented path.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-na", ghostty, "--args", "-e", editor, path]
+        try? p.run()
+    }
     @objc private func actShowModelPicker() { panel.showModelMenu() }
     @objc private func actShowHistory() { panel.showHistoryMenu() }
     @objc private func actFocusInput() { panel.focusInput() }
