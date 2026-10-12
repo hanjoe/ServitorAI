@@ -18,6 +18,7 @@ enum Markdown {
     // MARK: - Public API
 
     static func render(_ source: String, item: Int) -> RenderedMarkdown {
+        let msgIndex = item
         let out = NSMutableAttributedString()
         var codeBlocks: [String] = []
         var paragraph: [String] = []
@@ -27,9 +28,15 @@ enum Markdown {
         var fenceLines: [String] = []
         var table: [String] = []
 
+        func nextCodeLink(for code: String) -> URL {
+            let idx = codeBlocks.count
+            codeBlocks.append(code)
+            return URL(string: "servitor://copy-code/\(msgIndex)/\(idx)")!
+        }
+
         func flushParagraph() {
             guard !paragraph.isEmpty else { return }
-            let content = inline(paragraph.joined(separator: "\n"), font: T.bodyFont, color: T.text)
+            let content = inline(paragraph.joined(separator: "\n"), font: T.bodyFont, color: T.text, codeLink: nextCodeLink)
             appendBlock(content, to: out, style: para(spacingAfter: 10))
             paragraph.removeAll()
         }
@@ -86,7 +93,7 @@ enum Markdown {
                 flushParagraph()
                 let sizes: [CGFloat] = [15, 13, 12, 11, 10, 10]
                 let font = T.pixel(sizes[min(h.level, 6) - 1])
-                let content = inline(h.text, font: font, color: T.bone)
+                let content = inline(h.text, font: font, color: T.bone, codeLink: nextCodeLink)
                 appendBlock(content, to: out, style: para(spacingBefore: 6, spacingAfter: 10, lineSpacing: 6))
                 continue
             }
@@ -110,7 +117,7 @@ enum Markdown {
                 let line = NSMutableAttributedString(string: item.marker + "\t", attributes: [
                     .font: T.bodyFont, .foregroundColor: T.brass,
                 ])
-                line.append(inline(item.text, font: T.bodyFont, color: T.text))
+                line.append(inline(item.text, font: T.bodyFont, color: T.text, codeLink: nextCodeLink))
                 appendBlock(line, to: out, style: style)
                 continue
             }
@@ -122,7 +129,7 @@ enum Markdown {
                 let line = NSMutableAttributedString(string: "▌ ", attributes: [
                     .font: T.bodyFont, .foregroundColor: T.overlay0,
                 ])
-                line.append(inline(text, font: T.bodyFont, color: T.quote))
+                line.append(inline(text, font: T.bodyFont, color: T.quote, codeLink: nextCodeLink))
                 appendBlock(line, to: out, style: para(first: 8, head: 30, spacingAfter: 6))
                 continue
             }
@@ -264,7 +271,12 @@ enum Markdown {
 
     /// Inline markdown (bold, italic, strike, code, links). Pixel fonts have no
     /// bold/italic faces, so emphasis is synthesised with stroke / obliqueness.
-    static func inline(_ source: String, font: NSFont, color: NSColor) -> NSMutableAttributedString {
+    static func inline(
+        _ source: String,
+        font: NSFont,
+        color: NSColor,
+        codeLink: ((String) -> URL)? = nil
+    ) -> NSMutableAttributedString {
         var options = AttributedString.MarkdownParsingOptions()
         options.interpretedSyntax = .inlineOnlyPreservingWhitespace
         options.failurePolicy = .returnPartiallyParsedIfPossible
@@ -290,6 +302,7 @@ enum Markdown {
                 attrs[.font] = T.body(font.pointSize * 0.92)
                 attrs[.foregroundColor] = T.inlineCode
                 attrs[.backgroundColor] = T.codeBg
+                if let codeLink { attrs[.link] = codeLink(piece) }
             }
             if let url = run.link { attrs[.link] = url }
             result.append(NSAttributedString(string: piece, attributes: attrs))

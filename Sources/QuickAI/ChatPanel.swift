@@ -82,6 +82,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
             "\(k.display(for: .nextChat)) newer chat",
             "\(k.display(for: .cycleModel)) model",
             "⌃1-9 pick model",
+            "⌃⇧1-0 copy/open in view",
             "esc close",
         ].joined(separator: " · ")
     }
@@ -210,6 +211,11 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         scrollView.borderType = .noBorder
         scrollView.scrollerStyle = .overlay
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: scrollView.contentView,
+            queue: .main
+        ) { [weak self] _ in self?.scheduleCodeBadgeUpdate() }
 
         // --- Empty state (centered) ---
         emptyTitle.font = T.pixel(20)
@@ -223,7 +229,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         emptyHints.font = T.legend(15)
         emptyHints.textColor = T.overlay0
         emptyHints.alignment = .center
-        emptyHints.maximumNumberOfLines = 2
+        emptyHints.maximumNumberOfLines = 3
         emptyHints.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         emptyHints.widthAnchor.constraint(lessThanOrEqualToConstant: 560).isActive = true
 
@@ -286,7 +292,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         hintLabel.textColor = T.overlay0
         hintLabel.alignment = .center
         hintLabel.lineBreakMode = .byWordWrapping
-        hintLabel.maximumNumberOfLines = 2
+        hintLabel.maximumNumberOfLines = 3
         hintLabel.cell?.wraps = true
         hintLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -492,6 +498,112 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
             scrollView.contentView.scroll(to: origin)
             scrollView.reflectScrolledClipView(scrollView.contentView)
         }
+        scheduleCodeBadgeUpdate()
+    }
+
+    // MARK: - Visible target numbering
+
+    /// A copyable/openable target in the viewport. Code links copy; web links
+    /// open. Numbered 1-0 from top to bottom, ⌃⇧n triggers target #n.
+    private enum VisibleTarget {
+        case code(item: Int, block: Int)
+        case link(url: URL)
+    }
+
+    private var codeBadges: [CodeBadge] = []
+    private var badgeUpdateScheduled = false
+    /// Targets currently visible in the viewport, ordered top-to-bottom.
+    private var numberedTargets: [VisibleTarget] = []
+
+    private func scheduleCodeBadgeUpdate() {
+        guard !badgeUpdateScheduled else { return }
+        badgeUpdateScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.badgeUpdateScheduled = false
+            self.updateCodeBadges()
+        }
+    }
+
+    private func updateCodeBadges() {
+        codeBadges.forEach { $0.removeFromSuperview() }
+        codeBadges = []
+        numberedTargets = []
+        guard let ts = outputView.textStorage,
+              let lm = outputView.layoutManager,
+              let tc = outputView.textContainer,
+              emptyStateView.isHidden else { return }
+        let visible = outputView.visibleRect
+        var found: [(rect: NSRect, target: VisibleTarget)] = []
+        ts.enumerateAttribute(.link, in: NSRange(location: 0, length: ts.length)) { value, range, _ in
+            guard let url = value as? URL else { return }
+            let glyph = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            var r = lm.boundingRect(forGlyphRange: glyph, in: tc)
+            guard !r.isNull, !r.isEmpty else { return }
+            r.origin.x += outputView.textContainerOrigin.x
+            r.origin.y += outputView.textContainerOrigin.y
+            guard r.intersects(visible.insetBy(dx: 0, dy: -24)) else { return }
+
+            let target: VisibleTarget
+            if url.scheme == "servitor", url.host == "copy-code" {
+                let parts = url.pathComponents.filter { $0 != "/" }
+                guard parts.count == 2, let i = Int(parts[0]), let b = Int(parts[1]) else { return }
+                target = .code(item: i, block: b)
+            } else if let scheme = url.scheme?.lowercased(), ["http", "https", "mailto"].contains(scheme) {
+                // use the first line's rect so the badge sits at the start of
+                // the link, not somewhere in the middle of a wrapped line.
+                let firstGlyph = NSRange(location: glyph.location, length: min(1, glyph.length))
+                var firstRect = lm.boundingRect(forGlyphRange: firstGlyph, in: tc)
+                if !firstRect.isNull, !firstRect.isEmpty {
+                    firstRect.origin.x += outputView.textContainerOrigin.x
+                    firstRect.origin.y += outputView.textContainerOrigin.y
+                    r = firstRect
+                }
+                target = .link(url: url)
+            } else {
+                return
+            }
+            found.append((r, target))
+        }
+        found.sort { $0.rect.minY < $1.rect.minY }
+        for (n, f) in found.prefix(10).enumerated() {
+            let badge = CodeBadge(number: n + 1)
+            let size = badge.intrinsicContentSize
+            // Raise links like a superscript; keep code badges centered.
+            let yOffset: CGFloat
+            switch f.target {
+            case .code: yOffset = -size.height / 2
+            case .link: yOffset = -size.height - 2
+            }
+            badge.frame = NSRect(x: f.rect.maxX + 4, y: f.rect.midY + yOffset, width: size.width, height: size.height)
+            outputView.addSubview(badge)
+            codeBadges.append(badge)
+            numberedTargets.append(f.target)
+        }
+        if !found.isEmpty {
+            Debug.log("badges: \(found.count) visible targets; placed \(codeBadges.count) badges")
+        }
+    }
+
+    /// ⌃⇧n — act on the n-th visible copyable/openable target. Code copies,
+    /// web links open, inline code copies.
+    func invokeNumberedTarget(_ n: Int) {
+        updateCodeBadges()
+        guard numberedTargets.indices.contains(n - 1) else {
+            toast("No target #\(n) in view")
+            return
+        }
+        switch numberedTargets[n - 1] {
+        case .code(let i, let b):
+            guard items.indices.contains(i), items[i].codeBlocks.indices.contains(b) else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(items[i].codeBlocks[b], forType: .string)
+            toast("Code #\(n) copied")
+        case .link(let url):
+            NSWorkspace.shared.open(url)
+            Debug.log("action: openVisibleTarget #\(n) url=\(url.absoluteString)")
+            toast("Link #\(n) opened")
+        }
     }
 
     private func userMargin() -> CGFloat {
@@ -673,5 +785,42 @@ extension ChatPanel {
         let size = panel.frame.size
         UserDefaults.standard.set(Double(size.width), forKey: "panelWidth")
         UserDefaults.standard.set(Double(size.height), forKey: "panelHeight")
+    }
+}
+
+/// A tiny numbered square pinned next to a visible copy target.
+/// Brass = code block (⌃⇧n), machine-teal = web link (⌃⌥n).
+/// Purely informational — it never swallows clicks or key events.
+private final class CodeBadge: NSView {
+    private let number: Int
+
+    init(number: Int) {
+        self.number = number
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("no") }
+
+    private var digit: String { number == 10 ? "0" : String(number) }
+    private var chord: String { "⌃⇧\(digit)" }
+
+    override var intrinsicContentSize: NSSize {
+        let s = NSAttributedString(string: chord, attributes: [
+            .font: ServitorTheme.legend(11),
+        ]).size()
+        return NSSize(width: ceil(s.width) + 8, height: max(18, ceil(s.height) + 4))
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }  // click-through
+
+    override func draw(_ dirtyRect: NSRect) {
+        ServitorTheme.brass.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4).fill()
+        let s = NSAttributedString(string: chord, attributes: [
+            .font: ServitorTheme.legend(11), .foregroundColor: ServitorTheme.mantle,
+        ])
+        let sz = s.size()
+        s.draw(at: NSPoint(x: (bounds.width - sz.width) / 2, y: (bounds.height - sz.height) / 2))
     }
 }

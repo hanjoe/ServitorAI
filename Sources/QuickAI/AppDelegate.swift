@@ -56,6 +56,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         appMenu.addItem(.separator())
         bind("Copy Answer", #selector(actCopyAnswer), .copyAnswer)
         bind("Copy Last Code Block", #selector(actCopyCode), .copyCode)
+        // ⌃⇧1-0 act on the n-th copyable/openable target visible in the
+        // viewport: code blocks/inline code copy, web links open.
+        for n in 1...10 {
+            let item = NSMenuItem(title: "Target in View #\(n)", action: #selector(actVisibleTarget(_:)), keyEquivalent: n == 10 ? "0" : String(n))
+            item.keyEquivalentModifierMask = [.control, .shift]
+            item.target = self
+            item.tag = n
+            appMenu.addItem(item)
+        }
         bind("Paste Answer to App", #selector(actPaste), .pasteAnswer)
         bind("Regenerate", #selector(actRegenerate), .regenerate)
         bind("Regenerate with Next Model", #selector(actRegenerateNextModel), .regenerateNextModel)
@@ -600,6 +609,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         setPasteboard(code)
         Debug.log("action: copyLastCodeBlock (\(code.count) chars)")
         panel.toast("Code copied")
+    }
+
+    /// ⌃⇧1-0 — copy or open the n-th visible code/link target.
+    @objc private func actVisibleTarget(_ sender: NSMenuItem) {
+        panel.invokeNumberedTarget(sender.tag)
     }
 
     /// ⌘↵ — copy the answer, return to the app you came from, and paste it
