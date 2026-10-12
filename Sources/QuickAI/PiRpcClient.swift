@@ -6,6 +6,11 @@ protocol PiRpcClientDelegate: AnyObject {
     func piClientDidSettle(_ client: PiRpcClient)
     func piClient(_ client: PiRpcClient, didFail error: String)
     func piClient(_ client: PiRpcClient, didUpdateSession file: String?, id: String?, name: String?)
+    func piClient(_ client: PiRpcClient, toolDidFail name: String, message: String)
+}
+
+extension PiRpcClientDelegate {
+    func piClient(_ client: PiRpcClient, toolDidFail name: String, message: String) {}
 }
 
 /// Manages one warm `pi --mode rpc` child process and streams its output.
@@ -30,6 +35,21 @@ final class PiRpcClient {
         return provider == "ollama-cloud"
             ? "model request failed — check OLLAMA_API_KEY in ~/.config/servitorai/config.json or switch model with ⌘M"
             : "model request failed — check ~/.config/servitorai/pi.log or switch model with ⌘M"
+    }
+
+    /// Short, stable date/time line injected into every user message. Because the
+    /// RPC child stays alive for a long time, this is computed fresh per prompt
+    /// rather than baked into the system prompt at spawn.
+    static var dateContextPrefix: String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone.current
+        fmt.dateStyle = .full
+        fmt.timeStyle = .short
+        let tz = TimeZone.current.abbreviation() ?? TimeZone.current.identifier
+        let date = fmt.string(from: Date())
+        let iso = ISO8601DateFormatter().string(from: Date())
+        return "[Context: current local date/time is \(date) (\(tz)) — \(iso.prefix(10))] "
     }
 
     /// The model the user picked in the app. pi falls back to its CLI default
@@ -96,7 +116,13 @@ final class PiRpcClient {
             toolPrompt = "You have no tools. Do not run commands or modify files."
         } else {
             let searchInstruction = activeSearchExtension.map { " Use \($0.toolName) only when web search is needed." } ?? ""
-            toolPrompt = "Available tools: " + toolNames.joined(separator: ", ") + ". Use them only when the user's request needs local or current information. Do not run commands or modify files." + searchInstruction
+            let rules = [
+                "Use them only when the user's request needs local or current information.",
+                "Do not run commands or modify files.",
+                "The current date and time are provided with each user message; never look them up via tools or infer them from file names, logs, backups, screenshots, or timestamps.",
+                "If a tool errors or returns no results, tell the user plainly. Do not run extra read/list_files calls to 'verify' or guess the answer; use read/list_files only for paths the user mentions or URLs returned by web_search.",
+            ]
+            toolPrompt = "Available tools: " + toolNames.joined(separator: ", ") + ". " + rules.joined(separator: " ") + searchInstruction
         }
         var arguments = [
             "--mode", "rpc",
@@ -223,17 +249,19 @@ final class PiRpcClient {
         if type == "tool_execution_start", let name = obj["toolName"] as? String {
             Debug.log("tool: \(name)")   // arguments can contain paths/queries — not logged
         }
-        if type == "tool_execution_end", let name = obj["toolName"] as? String {
+        if type == "tool_execution_end", let failure = toolFailure(from: obj) {
+            Debug.log("tool error: \(failure.name) → \(failure.message.prefix(150))")
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.delegate?.piClient(self, toolDidFail: failure.name, message: failure.message)
+            }
+        } else if type == "tool_execution_end", let name = obj["toolName"] as? String {
             if let result = obj["result"] as? [String: Any],
                let content = result["content"] as? [[String: Any]],
                let text = content.first?["text"] as? String {
                 // Tool output can contain local file content (incl. secrets) or
                 // echo the user's query — only its size is logged.
                 Debug.log("tool result: \(name) → (\(text.count) chars)")
-            } else if let result = obj["result"] as? [String: Any],
-                      let details = result["details"] as? [String: Any],
-                      let error = details["error"] as? String {
-                Debug.log("tool error: \(name) → \(error.prefix(150))")
             } else {
                 Debug.log("tool result: \(name) → (unparsed)")
             }
@@ -372,7 +400,8 @@ final class PiRpcClient {
     }
 
     func prompt(_ message: String) {
-        send(["type": "prompt", "message": message]) { [weak self] result in
+        let datedMessage = Self.dateContextPrefix + message
+        send(["type": "prompt", "message": datedMessage]) { [weak self] result in
             guard let self else { return }
             if case .failure(let e) = result {
                 DispatchQueue.main.async {
