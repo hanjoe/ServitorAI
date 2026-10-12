@@ -26,8 +26,11 @@ final class SessionStore {
     static func save(_ meta: SessionMeta) {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted]
-        if let data = try? enc.encode(meta) {
-            try? data.write(to: sidecarURL(id: meta.id), options: .atomic)
+        do {
+            let data = try enc.encode(meta)
+            try data.write(to: sidecarURL(id: meta.id), options: .atomic)
+        } catch {
+            Debug.log("SessionStore.save FAILED for \(meta.id): \(error)")
         }
     }
 

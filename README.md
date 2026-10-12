@@ -71,15 +71,28 @@ Fast-model notes (measured warm time-to-first-token):
 
 ## Shortcuts
 
+All shortcuts are real menu key equivalents (the app menu defines them; ⌘K lists them in-app and a hint line sits above the input).
+
 | action | key |
 |--------|-----|
-| Toggle panel | ⌘⇧A (or menu bar ✨ icon) |
+| Toggle panel (global) | ⌘⇧A |
 | Submit | Enter |
 | Cancel / hide | Esc |
-| New chat | ⌘N |
-| Cycle model | ⌘M |
+| Actions menu | ⌘K |
 | Copy last answer | ⌘⇧C |
-| Previous / next chat | ⌘[ / ⌘] |
+| Copy last code block | ⌘⌥C |
+| Copy selection (native) | ⌘C |
+| Paste answer into previous app | ⌘↵ |
 | Regenerate | ⌘R |
+| Regenerate with next model | ⇧⌘R |
+| New chat | ⌘N |
+| Previous / next chat | ⌘[ / ⌘] (or ⌘⌥← / ⌘⌥→) |
+| Cycle model | ⌘M |
+| Model picker menu | ⇧⌘M |
+| Pick model 1–9 | ⌘1 … ⌘9 |
+| Recent chats | ⇧⌘H |
+| Focus input | ⌘L |
 | Hide panel | ⌘W |
-| Quit | menu bar menu → Quit ServitorAI |
+| Quit | ⌘Q |
+
+Typing while the transcript is focused jumps back to the input automatically.

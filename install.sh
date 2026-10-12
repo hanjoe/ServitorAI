@@ -22,6 +22,8 @@ cp "$HERE/.build/out/Products/Release/QuickAI" "$EXEC"
 cp "$HERE/Info.plist" "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"
 cp "$HERE/Assets/servitor-skull.png" "$APP/Contents/Resources/servitor-skull.png"
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp "$HERE"/Assets/Fonts/*.ttf "$HERE"/Assets/Fonts/OFL-*.txt "$APP/Contents/Resources/Fonts/"
 
 echo "==> Installing LaunchAgent"
 mkdir -p "$HOME/Library/LaunchAgents"

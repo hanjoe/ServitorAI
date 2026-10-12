@@ -40,9 +40,11 @@ final class PiRpcClient {
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/pi")
         process.arguments = [
             "--mode", "rpc",
+            // Pure chat: no tools and nothing from the user's pi setup. Verified
+            // empirically: with these flags pi loads 0 extensions / 0 commands.
             "--no-tools",
             "--no-extensions", "--no-skills", "--no-prompt-templates",
-            "--no-context-files", "--no-mcp",
+            "--no-context-files", "--no-mcp", "--no-themes",
             "--thinking", config.thinking,
             "--provider", config.provider,
             "--model", config.model,
@@ -51,6 +53,13 @@ final class PiRpcClient {
         ]
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         var env = ProcessInfo.processInfo.environment
+        // Don't let an enclosing pi session (e.g. when launched from a pi shell)
+        // redirect model/provider/session for this isolated chat child.
+        for key in ["PI_MODEL", "PI_PROVIDER", "PI_REASONING_LEVEL", "PI_SESSION_FILE",
+                    "PI_SESSION_ID", "PI_CODING_AGENT", "PI_CODING_AGENT_SESSION_DIR"] {
+            env.removeValue(forKey: key)
+        }
+        env["PI_SKIP_VERSION_CHECK"] = "1"
         if let extra = config.env {
             for (k, v) in extra where env[k] == nil {
                 env[k] = v
@@ -122,7 +131,8 @@ final class PiRpcClient {
             return
         }
         let type = obj["type"] as? String
-        Debug.log("event: \(type ?? "<no type>")")
+        // message_update fires per token; logging it would flood the trace.
+        if type != "message_update" { Debug.log("event: \(type ?? "<no type>")") }
 
         switch type {
         case "response":
@@ -131,12 +141,15 @@ final class PiRpcClient {
                 let cb = pending.removeValue(forKey: id)
                 lock.unlock()
                 if let cb {
+                    let result: Result<[String: Any], Error>
                     if obj["success"] as? Bool == true {
-                        cb(.success(obj))
+                        result = .success(obj)
                     } else {
                         let err = obj["error"] as? String ?? "command failed"
-                        cb(.failure(NSError(domain: "QuickAI.rpc", code: 1, userInfo: [NSLocalizedDescriptionKey: err])))
+                        result = .failure(NSError(domain: "QuickAI.rpc", code: 1, userInfo: [NSLocalizedDescriptionKey: err]))
                     }
+                    // Completions touch UI state, so always deliver them on main.
+                    DispatchQueue.main.async { cb(result) }
                 }
             }
         case "message_update":
@@ -290,6 +303,31 @@ final class PiRpcClient {
             var data: [String: Any]?
             if case .success(let resp) = result { data = resp["data"] as? [String: Any] }
             completion?(data)
+        }
+    }
+
+    /// User messages that can be forked from, oldest first (entry ids).
+    func getForkMessages(completion: @escaping ([String]) -> Void) {
+        send(["type": "get_fork_messages"]) { result in
+            var ids: [String] = []
+            if case .success(let resp) = result,
+               let data = resp["data"] as? [String: Any],
+               let msgs = data["messages"] as? [[String: Any]] {
+                ids = msgs.compactMap { $0["entryId"] as? String }
+            }
+            completion(ids)
+        }
+    }
+
+    /// Fork a new session from a previous user message (history before it is kept).
+    func fork(entryId: String, completion: @escaping (Bool) -> Void) {
+        send(["type": "fork", "entryId": entryId]) { result in
+            if case .success(let resp) = result {
+                let cancelled = (resp["data"] as? [String: Any])?["cancelled"] as? Bool ?? false
+                completion(!cancelled)
+            } else {
+                completion(false)
+            }
         }
     }
 }

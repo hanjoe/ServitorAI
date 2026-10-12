@@ -1,8 +1,8 @@
 import AppKit
+import CoreText
 
 /// "Servitor" theme — Warhammer 40k Adeptus Mechanicus crossed with the
-/// Catppuccin Mocha palette. Dark gothic base, mars-red accent, brass for the
-/// operator, and a cold machine-spirit glow for the servitor's replies.
+/// Catppuccin Mocha palette, rendered in 8-bit pixel fonts.
 enum ServitorTheme {
     // Catppuccin Mocha base
     static let base = hex("#1e1e2e")       // panel background
@@ -18,18 +18,65 @@ enum ServitorTheme {
     static let subtext1 = hex("#bac2de")
 
     // Servitor accents
-    static let marsRed = hex("#f38ba8")      // Mechanicus blood-red (accent / You)
-    static let brass = hex("#fab387")        // brass/gold (highlights)
-    static let machineTeal = hex("#94e2d5")  // machine-spirit glow (Assistant)
-    static let bone = hex("#f5e0dc")         // bone/cream
+    static let marsRed = hex("#f38ba8")      // Mechanicus blood-red (accent)
+    static let brass = hex("#fab387")        // brass/gold (Omnissiah)
+    static let machineTeal = hex("#94e2d5")  // machine-spirit glow (Servitor)
+    static let bone = hex("#f5e0dc")         // bone/cream (headings)
     static let warning = hex("#f9e2af")
     static let success = hex("#a6e3a1")
     static let error = hex("#f38ba8")
 
-    // Fonts — monospace for the techno-gothic labels, system for readable body.
-    static let labelFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
-    static let bodyFont = NSFont.systemFont(ofSize: 13)
-    static let inputFont = NSFont.systemFont(ofSize: 13)
+    // Rich-text roles
+    static let link = hex("#89b4fa")         // highlighted links
+    static let codeBg = hex("#11111b")
+    static let codeFg = hex("#a6e3a1")
+    static let inlineCode = hex("#f9e2af")
+    static let quote = hex("#9399b2")
+
+    // MARK: - Fonts (8-bit)
+
+    /// Sizes, in points. VT323 has a small x-height, hence the large numbers.
+    static let bodySize: CGFloat = 24
+    static let codeSize: CGFloat = 22
+    static let inputSize: CGFloat = 24
+    static let labelSize: CGFloat = 9
+
+    private static var fontsRegistered = false
+
+    /// Registers the bundled pixel fonts for this process (idempotent).
+    static func registerFonts() {
+        guard !fontsRegistered else { return }
+        fontsRegistered = true
+        var dirs: [URL] = []
+        if let res = Bundle.main.resourceURL { dirs.append(res.appendingPathComponent("Fonts")) }
+        dirs.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Assets/Fonts"))
+        for dir in dirs {
+            for name in ["PressStart2P-Regular.ttf", "VT323-Regular.ttf"] {
+                let url = dir.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+                }
+            }
+        }
+    }
+
+    /// Press Start 2P — the classic 8-bit display face (labels, headings).
+    static func pixel(_ size: CGFloat) -> NSFont {
+        registerFonts()
+        return NSFont(name: "PressStart2P-Regular", size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .heavy)
+    }
+
+    /// VT323 — a readable pixel terminal face (body text, code, input).
+    static func body(_ size: CGFloat) -> NSFont {
+        registerFonts()
+        return NSFont(name: "VT323-Regular", size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size * 0.62, weight: .regular)
+    }
+
+    static var labelFont: NSFont { pixel(labelSize) }
+    static var bodyFont: NSFont { body(bodySize) }
+    static var inputFont: NSFont { body(inputSize) }
 
     static func hex(_ s: String) -> NSColor {
         let cleaned = s.replacingOccurrences(of: "#", with: "")
