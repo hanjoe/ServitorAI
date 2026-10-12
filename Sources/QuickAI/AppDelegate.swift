@@ -110,9 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         NSApp.mainMenu = main
     }
 
-    /// Posting the distributed notification `com.johanneswitt.servitorai.dump`
-    /// writes /tmp/servitorai-dump.png (the panel rendered by the app itself,
-    /// so no Screen Recording permission is needed) and logs layout metrics.
+    /// Debug-only distributed-notification hooks (dump/submit). Compiled out
+    /// of release builds so no local process can inject prompts or capture
+    /// screenshots in a production install.
+    #if DEBUG
     private func registerDebugHooks() {
         DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.johanneswitt.servitorai.dump"), object: nil, queue: .main
@@ -133,6 +134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
             try? FileManager.default.removeItem(atPath: "/tmp/servitorai-submit.txt")
         }
     }
+    #else
+    private func registerDebugHooks() {}
+    #endif
 
     private func resolveInitialModelIndex() {
         if let idx = config.models.firstIndex(where: { $0.modelId == config.model && $0.provider == config.provider }) {
