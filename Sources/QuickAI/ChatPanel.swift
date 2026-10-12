@@ -218,10 +218,13 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         emptySubtitle.textColor = T.subtext
         emptySubtitle.alignment = .center
 
-        let emptyHints = NSTextField(labelWithString: ChatPanel.hintText())
-        emptyHints.font = T.pixel(12)
+        let emptyHints = NSTextField(wrappingLabelWithString: ChatPanel.hintText())
+        emptyHints.font = T.legend(15)
         emptyHints.textColor = T.overlay0
         emptyHints.alignment = .center
+        emptyHints.maximumNumberOfLines = 2
+        emptyHints.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        emptyHints.widthAnchor.constraint(lessThanOrEqualToConstant: 560).isActive = true
 
         let emptyStack = NSStackView(views: [emptyTitle, emptySubtitle, emptyHints])
         emptyStack.orientation = .vertical
@@ -278,9 +281,12 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
             self.items.forEach { $0.rendered = nil }
             self.rebuild()
         }
-        hintLabel.font = T.pixel(11)
+        hintLabel.font = T.legend(14)
         hintLabel.textColor = T.overlay0
         hintLabel.alignment = .center
+        hintLabel.lineBreakMode = .byWordWrapping
+        hintLabel.maximumNumberOfLines = 2
+        hintLabel.cell?.wraps = true
         hintLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // --- Toast ---
@@ -554,10 +560,10 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         // Each button shows the key that triggers it.
         let k = Keymap.shared
         for (i, (title, key, target)) in [("COPY", k.display(for: .copyAnswer), "copy-answer"), ("RETRY", k.display(for: .regenerate), "regenerate")].enumerated() {
-            if i > 0 { row.append(NSAttributedString(string: "    ", attributes: [.font: T.pixel(10)])) }
+            if i > 0 { row.append(NSAttributedString(string: "    ", attributes: [.font: T.legend(15)])) }
             let start = row.length
             row.append(NSAttributedString(string: "[ \(title) \(key) ]", attributes: [
-                .font: T.pixel(10),
+                .font: T.legend(15),
             ]))
             row.addAttribute(.link, value: URL(string: "servitor://\(target)") as Any,
                              range: NSRange(location: start, length: row.length - start))

@@ -78,6 +78,16 @@ enum ServitorTheme {
     static var bodyFont: NSFont { body(bodySize) }
     static var inputFont: NSFont { body(inputSize) }
 
+    /// A serif face used only for the keybind legend (hint bar, empty-state
+    /// hints, action-row buttons) — the blocky pixel font renders ⌘/⌥/⇧/⌃
+    /// glyphs poorly at small sizes; a serif reads them cleanly.
+    static func legend(_ size: CGFloat) -> NSFont {
+        NSFont(name: "New York", size: size)
+            ?? NSFont(name: "Georgia", size: size)
+            ?? NSFont(descriptor: NSFontDescriptor(name: "System", size: size).withDesign(.serif) ?? NSFontDescriptor(), size: size)
+            ?? NSFont.systemFont(ofSize: size)
+    }
+
     static func hex(_ s: String) -> NSColor {
         let cleaned = s.replacingOccurrences(of: "#", with: "")
         var value: UInt64 = 0
