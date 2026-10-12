@@ -750,7 +750,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
             return true
         }
         guard copyMode else { return false }
-        let key = event.charactersIgnoringModifiers ?? ""
+        let key = (event.charactersIgnoringModifiers ?? "").lowercased()
         let shifted = event.modifierFlags.contains(.shift)
         switch event.keyCode {
         case 53: exitCopyMode(); return true // Escape
@@ -762,7 +762,6 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         case "q": exitCopyMode()
         case "n": selectSearchMatch(searchMatchIndex + (shifted ? -1 : 1))
         case "v":
-            guard shifted else { break }
             let ns = outputView.string as NSString
             lineSelectionAnchor = ns.lineRange(for: outputView.selectedRange())
             outputView.setSelectedRange(lineSelectionAnchor!)

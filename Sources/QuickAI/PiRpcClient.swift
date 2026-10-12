@@ -45,7 +45,7 @@ final class PiRpcClient {
         let hasList = listExtension.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         let availableTools = (["read"] + (hasList ? ["list_files"] : []) + (hasDDGR ? ["web_search"] : [])).joined(separator: ",")
         let basePrompt = config.systemPrompt.contains("You have no tools") ? AppConfig.defaultSystemPrompt : config.systemPrompt
-        let toolPrompt = "Available read-only tools: read" + (hasList ? ", list_files" : "") + (hasDDGR ? ", web_search" : "") + ". Use them only when the user's request needs local or current information. Do not run commands, modify files, or use Orbit."
+        let toolPrompt = "Available read-only tools: read" + (hasList ? ", list_files" : "") + (hasDDGR ? ", web_search" : "") + ". Use them only when the user's request needs local or current information. Do not run commands or modify files."
         var arguments = [
             "--mode", "rpc",
             // Narrow read-only tool allowlist and only explicit, vetted extensions.
