@@ -263,7 +263,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         }
         rpcLaunched = true
         let client = rpc!
-        client.start(resolvedEnv: secretsEnv, passKeys: secretsPassKeys, searchExtension: approvedSearchExtension)
+        client.start(
+            resolvedEnv: secretsEnv,
+            passKeys: secretsPassKeys,
+            searchExtensionPath: approvedSearchExtension?.path,
+            searchToolName: approvedSearchExtension?.toolName,
+            searchFingerprint: approvedSearchExtension?.fingerprint
+        )
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak client] in
             guard let self, let client, self.rpc === client else { return }
             self.loadPiModels(using: client)

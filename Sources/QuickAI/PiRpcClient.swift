@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 protocol PiRpcClientDelegate: AnyObject {
@@ -59,7 +60,10 @@ final class PiRpcClient {
 
     // MARK: - Process lifecycle
 
-    func start(resolvedEnv: [String: String]?, passKeys: Set<String>, searchExtension: SearchExtensionCandidate?) {
+    func start(resolvedEnv: [String: String]?, passKeys: Set<String>,
+               searchExtensionPath: String? = nil,
+               searchToolName: String? = nil,
+               searchFingerprint: String? = nil) {
         self.resolvedEnv = resolvedEnv ?? config.env
         self.passKeys = passKeys
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/pi")
@@ -71,11 +75,14 @@ final class PiRpcClient {
         // that blocks credential stores (~/.ssh, ~/.config/servitorai, .env …).
         let hasGuard = exists(guardExtension)
         let hasList = hasGuard && exists(listExtension)
-        let activeSearchExtension = searchExtension.flatMap { candidate -> SearchExtensionCandidate? in
-            guard candidate.toolName.range(of: #"^[A-Za-z][A-Za-z0-9_-]*$"#, options: .regularExpression) != nil,
-                  SearchExtensionCandidate.fingerprintOfFile(at: candidate.path) == candidate.fingerprint else { return nil }
-            return candidate
-        }
+        let activeSearchExtension: (path: String, toolName: String)? = {
+            guard let path = searchExtensionPath,
+                  let toolName = searchToolName,
+                  let fingerprint = searchFingerprint,
+                  toolName.range(of: #"^[A-Za-z][A-Za-z0-9_-]*$"#, options: .regularExpression) != nil,
+                  Self.fingerprintOfFile(at: path) == fingerprint else { return nil }
+            return (path, toolName)
+        }()
         var toolNames: [String] = []
         if hasGuard { toolNames.append("read") }
         if hasList { toolNames.append("list_files") }
@@ -301,6 +308,11 @@ final class PiRpcClient {
         default:
             break
         }
+    }
+
+    private static func fingerprintOfFile(at path: String) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     /// pi's stderr goes to a log file for post-mortem diagnosis.
