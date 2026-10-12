@@ -1,0 +1,16 @@
+{
+  "provider": "ollama-cloud",
+  "model": "deepseek-v4.1-flash:cloud",
+  "thinking": "off",
+  "systemPrompt": "You are a concise, helpful chat assistant. Answer conversationally and directly.",
+  "models": [
+    { "provider": "ollama-cloud", "modelId": "deepseek-v4.1-flash:cloud", "label": "DeepSeek Flash" },
+    { "provider": "ollama-cloud", "modelId": "deepseek-v4-pro:cloud", "label": "DeepSeek Pro" },
+    { "provider": "github-copilot", "modelId": "claude-haiku-4.5", "label": "Claude Haiku 4.5" },
+    { "provider": "github-copilot", "modelId": "gemini-3.7-flash", "label": "Gemini Flash" },
+    { "provider": "github-copilot", "modelId": "gpt-5-mini", "label": "GPT-5 Mini" }
+  ],
+  "env": {
+    "OLLAMA_API_KEY": "pass://YourVault/YourItemTitle/password"
+  }
+}

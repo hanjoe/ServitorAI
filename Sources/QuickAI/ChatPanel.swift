@@ -1,0 +1,981 @@
+import AppKit
+
+enum PanelAction {
+    case copyAnswer
+    case pasteAnswer
+    case regenerate
+}
+
+protocol ChatPanelDelegate: AnyObject {
+    func chatPanel(_ panel: ChatPanel, didSubmit text: String)
+    func chatPanelDidRequestCancel(_ panel: ChatPanel)
+    func chatPanelDidRequestNewChat(_ panel: ChatPanel)
+    func chatPanel(_ panel: ChatPanel, didInvoke action: PanelAction)
+}
+
+/// NSPanel subclass: borderless windows refuse key status by default, which
+/// prevented the input field from ever receiving keyboard focus.
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
+    weak var delegate: ChatPanelDelegate?
+
+    /// Menus supplied by the owner.
+    var onModelMenu: (() -> NSMenu)?
+    var onHistoryMenu: (() -> NSMenu)?
+
+    // MARK: Views
+
+    private let panel: NSPanel
+    private let backButton = NSButton()
+    private let newButton = NSButton()
+    private let titleLabel = NSTextField(labelWithString: "New Chat")
+    private let modelButton = NSButton()
+    private let inputField = NSTextField()
+    private let scrollView: NSScrollView
+    private let outputView: NSTextView
+    private let emptyStateView = NSView()
+    private let emptyTitle = NSTextField(labelWithString: "Ask anything")
+    private let emptySubtitle = NSTextField(labelWithString: "The quickest way to ask AI, right in the launcher.")
+    private let busySpinner = NSProgressIndicator()
+    private let watermarkView = NSImageView()
+    private let toastLabel = NSTextField(labelWithString: "")
+    private let hintLabel = NSTextField(labelWithString: "")
+
+    private let T = ServitorTheme.self
+
+    // MARK: Transcript model
+
+    private final class Item {
+        enum Kind { case user, assistant, notice }
+        let kind: Kind
+        var text: String
+        var done: Bool
+        var rendered: NSAttributedString?
+        var renderedAsLast = false
+        var codeBlocks: [String] = []
+        init(_ kind: Kind, _ text: String, done: Bool = true) {
+            self.kind = kind; self.text = text; self.done = done
+        }
+    }
+
+    private var items: [Item] = []
+    private var rebuildScheduled = false
+    private var layoutWidth: CGFloat = 0
+    private var toastToken = 0
+    private var searchingTranscript = false
+    private var copyMode = false
+    private var searchMatches: [NSRange] = []
+    private var searchMatchIndex = 0
+    private var lineSelectionAnchor: NSRange?
+    private var transcriptSelectionBeforeMouseDown: NSRange?
+
+    static let defaultSize = NSSize(width: 960, height: 700)
+
+    /// The one-line cheat sheet shown above the input and in the empty state.
+    static func hintText() -> String {
+        let k = Keymap.shared
+        return [
+            "\(k.display(for: .actionsMenu)) actions",
+            "\(k.display(for: .copyAnswer)) copy",
+            "\(k.display(for: .copyCode)) code",
+            "\(k.display(for: .regenerate)) retry",
+            "\(k.display(for: .newChat)) new",
+            "\(k.display(for: .prevChat)) older",
+            "\(k.display(for: .nextChat)) newer",
+            "\(k.display(for: .cycleModel)) model",
+            "⌃1-9 pick · ⌃⇧1-0 copy/open · ⌃/ search",
+            "PgUp/PgDn scroll · Esc close",
+        ].joined(separator: " · ")
+    }
+
+    private static func initialSize() -> NSSize {
+        let d = UserDefaults.standard
+        var w = d.double(forKey: "panelWidth")
+        var h = d.double(forKey: "panelHeight")
+        if w < 640 || h < 420 { w = defaultSize.width; h = defaultSize.height }
+        if let vf = NSScreen.main?.visibleFrame {
+            w = min(w, vf.width * 0.94)
+            h = min(h, vf.height * 0.94)
+        }
+        return NSSize(width: w, height: h)
+    }
+
+    override init() {
+        // NSTextView.scrollableTextView() wires up wrapping / resizing correctly
+        let sv = NSTextView.scrollableTextView()
+        scrollView = sv
+        outputView = sv.documentView as! NSTextView
+        panel = KeyablePanel(
+            contentRect: NSRect(origin: .zero, size: ChatPanel.initialSize()),
+            styleMask: [.borderless, .nonactivatingPanel, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+        build()
+    }
+
+    // MARK: - Layout
+
+    private func build() {
+        ServitorTheme.registerFonts()
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+        panel.isMovableByWindowBackground = true
+        panel.titleVisibility = .hidden
+        panel.minSize = NSSize(width: 640, height: 420)
+        panel.delegate = self
+
+        let content = panel.contentView!
+        content.wantsLayer = true
+        content.layer?.cornerRadius = 14
+        content.layer?.masksToBounds = true
+        content.layer?.backgroundColor = T.base.cgColor
+        content.layer?.borderWidth = 1
+        content.layer?.borderColor = T.surface1.cgColor
+
+        // Faded winged-skull watermark — bundled PNG, falling back to the drawn sigil.
+        let bundled: NSImage? = {
+            guard let res = Bundle.main.resourcePath else { return nil }
+            return NSImage(contentsOf: URL(fileURLWithPath: res + "/servitor-skull.png"))
+        }()
+        watermarkView.image = bundled ?? Sigil.wingedSkull(size: 300)
+        watermarkView.imageScaling = .scaleProportionallyUpOrDown
+        if bundled == nil { watermarkView.contentTintColor = T.brass }
+        watermarkView.alphaValue = 0.18
+        watermarkView.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(watermarkView)
+
+        // --- Header ---
+        let symbol = NSImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+        backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "History")?.withSymbolConfiguration(symbol)
+        backButton.target = self
+        backButton.action = #selector(backTapped)
+        backButton.isBordered = false
+        backButton.contentTintColor = T.subtext
+        backButton.toolTip = "Recent chats (⌘[ / ⌘])"
+
+        newButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New chat")?.withSymbolConfiguration(symbol)
+        newButton.target = self
+        newButton.action = #selector(newTapped)
+        newButton.isBordered = false
+        newButton.contentTintColor = T.subtext
+        newButton.toolTip = "New chat (⌘N)"
+
+        titleLabel.font = T.pixel(10)
+        titleLabel.textColor = T.text
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        modelButton.target = self
+        modelButton.action = #selector(modelTapped)
+        modelButton.isBordered = false
+        modelButton.toolTip = "Change model (⌘M cycles · ⌘1–9 pick · ⌘⇧M menu)"
+        setModelLabel("Model")
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let header = NSStackView(views: [backButton, newButton, titleLabel, spacer, modelButton])
+        header.orientation = .horizontal
+        header.spacing = 12
+        header.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 12, right: 18)
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        // --- Output (wraps to the visible width) ---
+        outputView.isEditable = false
+        outputView.isSelectable = true
+        outputView.drawsBackground = false
+        outputView.allowsUndo = false
+        outputView.isAutomaticLinkDetectionEnabled = false
+        outputView.textContainerInset = NSSize(width: 18, height: 14)
+        outputView.textContainer?.lineFragmentPadding = 0
+        outputView.delegate = self
+        outputView.linkTextAttributes = [
+            .foregroundColor: T.link,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .cursor: NSCursor.pointingHand,
+        ]
+        outputView.selectedTextAttributes = [
+            .backgroundColor: T.surface1,
+            .foregroundColor: T.text,
+        ]
+
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.borderType = .noBorder
+        scrollView.scrollerStyle = .overlay
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: scrollView.contentView,
+            queue: .main
+        ) { [weak self] _ in self?.scheduleCodeBadgeUpdate() }
+
+        // --- Empty state (centered) ---
+        emptyTitle.font = T.pixel(20)
+        emptyTitle.textColor = T.text
+        emptyTitle.alignment = .center
+        emptySubtitle.font = T.body(24)
+        emptySubtitle.textColor = T.subtext
+        emptySubtitle.alignment = .center
+
+        let emptyHints = NSTextField(wrappingLabelWithString: ChatPanel.hintText())
+        emptyHints.font = T.legend(15)
+        emptyHints.textColor = T.overlay0
+        emptyHints.alignment = .center
+        emptyHints.maximumNumberOfLines = 3
+        emptyHints.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        emptyHints.widthAnchor.constraint(lessThanOrEqualToConstant: 560).isActive = true
+
+        let emptyStack = NSStackView(views: [emptyTitle, emptySubtitle, emptyHints])
+        emptyStack.orientation = .vertical
+        emptyStack.alignment = .centerX
+        emptyStack.spacing = 14
+        emptyStack.translatesAutoresizingMaskIntoConstraints = false
+        emptyStateView.addSubview(emptyStack)
+        emptyStateView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            emptyStack.centerXAnchor.constraint(equalTo: emptyStateView.centerXAnchor),
+            emptyStack.centerYAnchor.constraint(equalTo: emptyStateView.centerYAnchor),
+        ])
+
+        // --- Busy spinner ---
+        busySpinner.style = .spinning
+        busySpinner.controlSize = .regular
+        busySpinner.isDisplayedWhenStopped = false
+        busySpinner.translatesAutoresizingMaskIntoConstraints = false
+
+        // --- Input (rounded) ---
+        let inputContainer = NSView()
+        inputContainer.wantsLayer = true
+        inputContainer.layer?.cornerRadius = 12
+        inputContainer.layer?.backgroundColor = T.surface0.cgColor
+        inputContainer.translatesAutoresizingMaskIntoConstraints = false
+
+        inputField.placeholderAttributedString = NSAttributedString(string: "Ask the servitor…", attributes: [
+            .font: T.inputFont, .foregroundColor: T.overlay0,
+        ])
+        inputField.font = T.inputFont
+        inputField.textColor = T.text
+        inputField.delegate = self
+        inputField.isBezeled = false
+        inputField.drawsBackground = false
+        inputField.focusRingType = .none
+        inputField.translatesAutoresizingMaskIntoConstraints = false
+
+        inputContainer.addSubview(inputField)
+        inputContainer.addSubview(busySpinner)
+        NSLayoutConstraint.activate([
+            inputField.leadingAnchor.constraint(equalTo: inputContainer.leadingAnchor, constant: 16),
+            inputField.trailingAnchor.constraint(equalTo: busySpinner.leadingAnchor, constant: -10),
+            inputField.centerYAnchor.constraint(equalTo: inputContainer.centerYAnchor),
+            busySpinner.trailingAnchor.constraint(equalTo: inputContainer.trailingAnchor, constant: -14),
+            busySpinner.centerYAnchor.constraint(equalTo: inputContainer.centerYAnchor),
+            inputContainer.heightAnchor.constraint(equalToConstant: 56),
+        ])
+
+        // --- Keyboard hints (always visible above the input) ---
+        hintLabel.stringValue = ChatPanel.hintText()
+        NotificationCenter.default.addObserver(forName: Keymap.changed, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.hintLabel.stringValue = ChatPanel.hintText()
+            self.items.forEach { $0.rendered = nil }
+            self.rebuild()
+        }
+        hintLabel.font = T.legend(14)
+        hintLabel.textColor = T.overlay0
+        hintLabel.alignment = .center
+        hintLabel.lineBreakMode = .byWordWrapping
+        hintLabel.maximumNumberOfLines = 3
+        hintLabel.cell?.wraps = true
+        hintLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // --- Toast ---
+        toastLabel.wantsLayer = true
+        toastLabel.drawsBackground = true
+        toastLabel.backgroundColor = T.surface1
+        toastLabel.layer?.cornerRadius = 7
+        toastLabel.layer?.masksToBounds = true
+        toastLabel.alignment = .center
+        toastLabel.isHidden = true
+        toastLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // --- Assemble ---
+        for v in [header, scrollView, emptyStateView, hintLabel, inputContainer, toastLabel] {
+            content.addSubview(v)
+        }
+
+        NSLayoutConstraint.activate([
+            watermarkView.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            watermarkView.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            watermarkView.widthAnchor.constraint(equalToConstant: 300),
+            watermarkView.heightAnchor.constraint(equalToConstant: 300),
+
+            header.topAnchor.constraint(equalTo: content.topAnchor),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+
+            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: inputContainer.topAnchor, constant: -12),
+
+            emptyStateView.topAnchor.constraint(equalTo: header.bottomAnchor),
+            emptyStateView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            emptyStateView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            emptyStateView.bottomAnchor.constraint(equalTo: inputContainer.topAnchor, constant: -12),
+
+            inputContainer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
+            inputContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+            inputContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+
+            toastLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            toastLabel.bottomAnchor.constraint(equalTo: inputContainer.topAnchor, constant: -20),
+            toastLabel.heightAnchor.constraint(equalToConstant: 30),
+        ])
+    }
+
+    // MARK: - Button actions
+
+    @objc private func backTapped() { showHistoryMenu() }
+    @objc private func newTapped() { delegate?.chatPanelDidRequestNewChat(self) }
+    @objc private func modelTapped() { showModelMenu() }
+
+    // MARK: - Public API
+
+    func setModelLabel(_ text: String) {
+        modelButton.attributedTitle = NSAttributedString(string: text, attributes: [
+            .font: T.pixel(9), .foregroundColor: T.brass,
+        ])
+    }
+
+    func setChatTitle(_ text: String) {
+        titleLabel.stringValue = text.isEmpty ? "New Chat" : text
+    }
+
+    func show() {
+        if !panel.isVisible { panel.center() }
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        inputField.window?.makeFirstResponder(inputField)
+    }
+
+    func hide() { panel.orderOut(nil) }
+    var isVisible: Bool { panel.isVisible }
+    func focusInput() { inputField.window?.makeFirstResponder(inputField) }
+
+    func setBusy(_ busy: Bool) {
+        if busy { busySpinner.startAnimation(nil) } else { busySpinner.stopAnimation(nil) }
+    }
+
+    func showModelMenu() {
+        guard let menu = onModelMenu?() else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: modelButton.bounds.height + 2), in: modelButton)
+    }
+
+    func showHistoryMenu() {
+        guard let menu = onHistoryMenu?() else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: backButton.bounds.height + 2), in: backButton)
+    }
+
+    /// Pops a menu (e.g. the ⌘K actions menu) near the top-right of the panel.
+    func popUpMenu(_ menu: NSMenu) {
+        guard let content = panel.contentView else { return }
+        let x = max(20, content.bounds.width - 340)
+        menu.popUp(positioning: nil, at: NSPoint(x: x, y: content.bounds.height - 50), in: content)
+    }
+
+    func toast(_ text: String) {
+        toastLabel.attributedStringValue = NSAttributedString(string: "   \(text)   ", attributes: [
+            .font: T.pixel(9), .foregroundColor: T.bone,
+        ])
+        toastLabel.isHidden = false
+        toastLabel.alphaValue = 1
+        toastToken += 1
+        let token = toastToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.toastToken == token else { return }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.25
+                self.toastLabel.animator().alphaValue = 0
+            }, completionHandler: {
+                if self.toastToken == token { self.toastLabel.isHidden = true }
+            })
+        }
+    }
+
+    // MARK: - Transcript API
+
+    func appendUser(_ text: String) {
+        items.append(Item(.user, text))
+        emptyStateView.isHidden = true
+        rebuild()
+    }
+
+    func beginAssistant() {
+        items.append(Item(.assistant, "", done: false))
+        emptyStateView.isHidden = true
+        rebuild()
+    }
+
+    func appendRawAssistant(_ delta: String) {
+        if let last = items.last, last.kind == .assistant, !last.done {
+            last.text += delta
+        } else {
+            items.append(Item(.assistant, delta, done: false))
+        }
+        emptyStateView.isHidden = true
+        scheduleRebuild()
+    }
+
+    func finishAssistant() {
+        if let last = items.last, last.kind == .assistant { last.done = true }
+        rebuild()
+    }
+
+    func showNotice(_ text: String) {
+        items.append(Item(.notice, text))
+        emptyStateView.isHidden = true
+        rebuild()
+    }
+
+    func clear() {
+        items.removeAll()
+        emptyStateView.isHidden = false
+        rebuild()
+    }
+
+    func render(messages: [ChatMessage]) {
+        items = messages.map { Item($0.role == "user" ? .user : .assistant, $0.text) }
+        emptyStateView.isHidden = !items.isEmpty
+        rebuild()
+    }
+
+    // MARK: - Rendering
+
+    private func scheduleRebuild() {
+        guard !rebuildScheduled else { return }
+        rebuildScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+            guard let self else { return }
+            self.rebuildScheduled = false
+            self.rebuild()
+        }
+    }
+
+    private func isNearBottom() -> Bool {
+        guard let doc = scrollView.documentView else { return true }
+        return scrollView.contentView.bounds.maxY >= doc.frame.height - 60
+    }
+
+    private func rebuild() {
+        let stick = isNearBottom()
+        let origin = scrollView.contentView.bounds.origin
+
+        let width = round(scrollView.contentSize.width)
+        if width != layoutWidth {
+            layoutWidth = width
+            items.forEach { $0.rendered = nil }
+        }
+
+        let lastAnswer = items.lastIndex(where: { $0.kind == .assistant })
+        let full = NSMutableAttributedString()
+        for (i, item) in items.enumerated() {
+            full.append(attributed(item, index: i, isLastAnswer: i == lastAnswer))
+        }
+        outputView.textStorage?.setAttributedString(full)
+        outputView.layoutManager?.ensureLayout(for: outputView.textContainer!)
+
+        if stick {
+            outputView.scrollToEndOfDocument(nil)
+        } else {
+            scrollView.contentView.scroll(to: origin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+        scheduleCodeBadgeUpdate()
+    }
+
+    // MARK: - Visible target numbering
+
+    /// A copyable/openable target in the viewport. Code links copy; web links
+    /// open. Numbered 1-0 from top to bottom, ⌃⇧n triggers target #n.
+    private enum VisibleTarget {
+        case code(item: Int, block: Int)
+        case link(url: URL)
+    }
+
+    private var codeBadges: [CodeBadge] = []
+    private var badgeUpdateScheduled = false
+    /// Targets currently visible in the viewport, ordered top-to-bottom.
+    private var numberedTargets: [VisibleTarget] = []
+
+    private func scheduleCodeBadgeUpdate() {
+        guard !badgeUpdateScheduled else { return }
+        badgeUpdateScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.badgeUpdateScheduled = false
+            self.updateCodeBadges()
+        }
+    }
+
+    private func updateCodeBadges() {
+        codeBadges.forEach { $0.removeFromSuperview() }
+        codeBadges = []
+        numberedTargets = []
+        guard let ts = outputView.textStorage,
+              let lm = outputView.layoutManager,
+              let tc = outputView.textContainer,
+              emptyStateView.isHidden else { return }
+        let visible = outputView.visibleRect
+        var found: [(rect: NSRect, target: VisibleTarget)] = []
+        ts.enumerateAttribute(.link, in: NSRange(location: 0, length: ts.length)) { value, range, _ in
+            guard let url = value as? URL else { return }
+            let glyph = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            var r = lm.boundingRect(forGlyphRange: glyph, in: tc)
+            guard !r.isNull, !r.isEmpty else { return }
+            r.origin.x += outputView.textContainerOrigin.x
+            r.origin.y += outputView.textContainerOrigin.y
+            guard r.intersects(visible.insetBy(dx: 0, dy: -24)) else { return }
+
+            let target: VisibleTarget
+            if url.scheme == "servitor", url.host == "copy-code" {
+                let parts = url.pathComponents.filter { $0 != "/" }
+                guard parts.count == 2, let i = Int(parts[0]), let b = Int(parts[1]) else { return }
+                target = .code(item: i, block: b)
+            } else if let scheme = url.scheme?.lowercased(), ["http", "https", "mailto"].contains(scheme) {
+                // use the first line's rect so the badge sits at the start of
+                // the link, not somewhere in the middle of a wrapped line.
+                let firstGlyph = NSRange(location: glyph.location, length: min(1, glyph.length))
+                var firstRect = lm.boundingRect(forGlyphRange: firstGlyph, in: tc)
+                if !firstRect.isNull, !firstRect.isEmpty {
+                    firstRect.origin.x += outputView.textContainerOrigin.x
+                    firstRect.origin.y += outputView.textContainerOrigin.y
+                    r = firstRect
+                }
+                target = .link(url: url)
+            } else {
+                return
+            }
+            found.append((r, target))
+        }
+        found.sort { $0.rect.minY < $1.rect.minY }
+        for (n, f) in found.prefix(10).enumerated() {
+            let badge = CodeBadge(number: n + 1)
+            let size = badge.intrinsicContentSize
+            // Raise links like a superscript; keep code badges centered.
+            let yOffset: CGFloat
+            switch f.target {
+            case .code: yOffset = -size.height / 2
+            case .link: yOffset = -size.height - 2
+            }
+            badge.frame = NSRect(x: f.rect.maxX + 4, y: f.rect.midY + yOffset, width: size.width, height: size.height)
+            outputView.addSubview(badge)
+            codeBadges.append(badge)
+            numberedTargets.append(f.target)
+        }
+        if !found.isEmpty {
+            Debug.log("badges: \(found.count) visible targets; placed \(codeBadges.count) badges")
+        }
+    }
+
+    /// ⌃⇧n — act on the n-th visible copyable/openable target. Code copies,
+    /// web links open, inline code copies.
+    func invokeNumberedTarget(_ n: Int) {
+        updateCodeBadges()
+        guard numberedTargets.indices.contains(n - 1) else {
+            toast("No target #\(n) in view")
+            return
+        }
+        switch numberedTargets[n - 1] {
+        case .code(let i, let b):
+            guard items.indices.contains(i), items[i].codeBlocks.indices.contains(b) else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(items[i].codeBlocks[b], forType: .string)
+            toast("Code #\(n) copied")
+        case .link(let url):
+            NSWorkspace.shared.open(url)
+            Debug.log("action: openVisibleTarget #\(n) url=\(url.absoluteString)")
+            toast("Link #\(n) opened")
+        }
+    }
+
+    private func userMargin() -> CGFloat {
+        let w = scrollView.contentSize.width > 0 ? scrollView.contentSize.width : panel.frame.width
+        return max(120, (w * 0.2).rounded())
+    }
+
+    private func attributed(_ item: Item, index: Int, isLastAnswer: Bool) -> NSAttributedString {
+        if item.done, let cached = item.rendered, item.renderedAsLast == isLastAnswer { return cached }
+
+        let out = NSMutableAttributedString()
+        switch item.kind {
+        case .user:
+            // Omnissiah: right-aligned, wrapping inside the right-hand column.
+            let margin = userMargin()
+            let labelStyle = Markdown.para(first: margin, head: margin, spacingAfter: 4, alignment: .right)
+            out.append(label("OMNISSIAH", color: T.brass, style: labelStyle))
+            let bodyStyle = Markdown.para(first: margin, head: margin, spacingAfter: 6, alignment: .right)
+            let body = NSMutableAttributedString(attributedString:
+                Markdown.plain(item.text, font: T.bodyFont, color: T.text, style: bodyStyle))
+            body.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: bodyStyle, .font: T.bodyFont]))
+            out.append(body)
+
+        case .assistant:
+            // Servitor: left-aligned markdown.
+            out.append(label("SERVITOR", color: T.machineTeal, style: Markdown.para(spacingAfter: 4)))
+            let md = Markdown.render(item.text, item: index)
+            item.codeBlocks = md.codeBlocks
+            out.append(md.text)
+            if !item.done {
+                out.append(NSAttributedString(string: "▮\n", attributes: [
+                    .font: T.bodyFont, .foregroundColor: T.machineTeal,
+                    .paragraphStyle: Markdown.para(spacingAfter: 6),
+                ]))
+            } else if isLastAnswer && !item.text.isEmpty {
+                out.append(actionsRow())
+            }
+
+        case .notice:
+            out.append(NSAttributedString(string: item.text + "\n", attributes: [
+                .font: T.body(22), .foregroundColor: T.warning,
+                .paragraphStyle: Markdown.para(spacingAfter: 6),
+            ]))
+        }
+
+        // spacer between messages
+        out.append(NSAttributedString(string: "\n", attributes: [
+            .font: T.body(10), .paragraphStyle: Markdown.para(spacingAfter: 4),
+        ]))
+
+        if item.done {
+            item.rendered = out
+            item.renderedAsLast = isLastAnswer
+        }
+        return out
+    }
+
+    private func label(_ text: String, color: NSColor, style: NSParagraphStyle) -> NSAttributedString {
+        NSAttributedString(string: text + "\n", attributes: [
+            .font: T.labelFont, .foregroundColor: color, .kern: 1.0, .paragraphStyle: style,
+        ])
+    }
+
+    private func actionsRow() -> NSAttributedString {
+        let style = Markdown.para(spacingBefore: 2, spacingAfter: 4)
+        let row = NSMutableAttributedString()
+        // Each button shows the key that triggers it.
+        let k = Keymap.shared
+        for (i, (title, key, target)) in [("COPY", k.display(for: .copyAnswer), "copy-answer"), ("RETRY", k.display(for: .regenerate), "regenerate")].enumerated() {
+            if i > 0 { row.append(NSAttributedString(string: "    ", attributes: [.font: T.legend(15)])) }
+            let start = row.length
+            row.append(NSAttributedString(string: "[ \(title) \(key) ]", attributes: [
+                .font: T.legend(15),
+            ]))
+            row.addAttribute(.link, value: URL(string: "servitor://\(target)") as Any,
+                             range: NSRange(location: start, length: row.length - start))
+        }
+        row.append(NSAttributedString(string: "\n"))
+        row.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: row.length))
+        return row
+    }
+
+    // MARK: - Transcript search / copy mode
+
+    func beginCopySearch() {
+        searchingTranscript = true
+        copyMode = false
+        inputField.stringValue = ""
+        inputField.placeholderAttributedString = NSAttributedString(string: "/ Search transcript · Enter", attributes: [
+            .font: T.inputFont, .foregroundColor: T.machineTeal,
+        ])
+        focusInput()
+    }
+
+    private func restoreInputPlaceholder() {
+        inputField.placeholderAttributedString = NSAttributedString(string: "Ask the servitor…", attributes: [
+            .font: T.inputFont, .foregroundColor: T.overlay0,
+        ])
+    }
+
+    private func runTranscriptSearch() {
+        let query = inputField.stringValue
+        searchingTranscript = false
+        inputField.stringValue = ""
+        restoreInputPlaceholder()
+        searchMatches.removeAll()
+        searchMatchIndex = 0
+        lineSelectionAnchor = nil
+        guard !query.isEmpty else { focusInput(); return }
+        let ns = outputView.string as NSString
+        var cursor = 0
+        while cursor < ns.length {
+            let found = ns.range(of: query, options: [.caseInsensitive], range: NSRange(location: cursor, length: ns.length - cursor))
+            if found.location == NSNotFound { break }
+            searchMatches.append(found)
+            cursor = NSMaxRange(found)
+        }
+        guard !searchMatches.isEmpty else { toast("No matches"); focusInput(); return }
+        copyMode = true
+        selectSearchMatch(0)
+        panel.makeFirstResponder(outputView)
+        toast("\(searchMatches.count) matches · n/N next/previous · V line select · y copy · q quit")
+    }
+
+    private func selectSearchMatch(_ index: Int) {
+        guard !searchMatches.isEmpty else { return }
+        searchMatchIndex = (index + searchMatches.count) % searchMatches.count
+        let range = searchMatches[searchMatchIndex]
+        outputView.setSelectedRange(range)
+        outputView.scrollRangeToVisible(range)
+        outputView.showFindIndicator(for: range)
+    }
+
+    func handleCopyModeKey(_ event: NSEvent) -> Bool {
+        if searchingTranscript && event.keyCode == 53 {
+            searchingTranscript = false
+            inputField.stringValue = ""
+            restoreInputPlaceholder()
+            focusInput()
+            return true
+        }
+        guard copyMode else { return false }
+        let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+        let shifted = event.modifierFlags.contains(.shift)
+        switch event.keyCode {
+        case 53: exitCopyMode(); return true // Escape
+        case 116: _ = scrollTranscriptPage(116); return true
+        case 121: _ = scrollTranscriptPage(121); return true
+        default: break
+        }
+        switch key {
+        case "q": exitCopyMode()
+        case "n": selectSearchMatch(searchMatchIndex + (shifted ? -1 : 1))
+        case "v":
+            let ns = outputView.string as NSString
+            lineSelectionAnchor = ns.lineRange(for: outputView.selectedRange())
+            outputView.setSelectedRange(lineSelectionAnchor!)
+            toast("Line mode · j/k extend · y copy · q quit")
+        case "j", "k", "\u{F700}", "\u{F701}":
+            guard let anchor = lineSelectionAnchor else { return true }
+            let ns = outputView.string as NSString
+            let current = ns.lineRange(for: outputView.selectedRange())
+            let location = key == "j" || key == "\u{F701}" ? min(ns.length, NSMaxRange(current)) : max(0, current.location - 1)
+            let next = ns.lineRange(for: NSRange(location: location, length: 0))
+            let lo = min(anchor.location, next.location)
+            let hi = max(NSMaxRange(anchor), NSMaxRange(next))
+            outputView.setSelectedRange(NSRange(location: lo, length: hi - lo))
+            outputView.scrollRangeToVisible(next)
+        case "y", "\r", "\n":
+            let range = outputView.selectedRange()
+            guard range.length > 0 else { return true }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString((outputView.string as NSString).substring(with: range), forType: .string)
+            toast("Selection copied")
+            exitCopyMode()
+        default: break
+        }
+        return true
+    }
+
+    private func exitCopyMode() {
+        copyMode = false
+        searchingTranscript = false
+        lineSelectionAnchor = nil
+        outputView.setSelectedRange(NSRange(location: 0, length: 0))
+        focusInput()
+    }
+
+    func scrollTranscriptPage(_ keyCode: UInt16) -> Bool {
+        guard keyCode == 116 || keyCode == 121 else { return false }
+        let clip = scrollView.contentView
+        guard let doc = scrollView.documentView else { return true }
+        let delta = max(80, clip.bounds.height * 0.9) * (keyCode == 116 ? -1 : 1)
+        let maxY = max(0, doc.bounds.height - clip.bounds.height)
+        let origin = NSPoint(x: clip.bounds.origin.x, y: min(max(clip.bounds.origin.y + delta, 0), maxY))
+        clip.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clip)
+        return true
+    }
+
+    /// Remember the existing selection only when a drag starts in the transcript.
+    func noteTranscriptMouseDown(_ event: NSEvent) {
+        guard let window = outputView.window, event.windowNumber == window.windowNumber else {
+            transcriptSelectionBeforeMouseDown = nil
+            return
+        }
+        let point = outputView.convert(event.locationInWindow, from: nil)
+        transcriptSelectionBeforeMouseDown = outputView.bounds.contains(point) ? outputView.selectedRange() : nil
+    }
+
+    /// Called after AppKit processes mouse-up. Copy only a newly changed,
+    /// non-empty selection; ordinary clicks (including links) do nothing.
+    func finishTranscriptMouseSelection() {
+        guard let before = transcriptSelectionBeforeMouseDown else { return }
+        transcriptSelectionBeforeMouseDown = nil
+        let after = outputView.selectedRange()
+        guard after.length > 0, NSEqualRanges(before, after) == false else { return }
+        let selected = (outputView.string as NSString).substring(with: after)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(selected, forType: .string)
+        toast("Selection copied")
+    }
+
+    // MARK: - Typing / focus helpers
+
+    /// True when the (read-only) transcript owns keyboard focus.
+    var isTranscriptFocused: Bool { panel.firstResponder === outputView }
+
+    /// If a printable key is pressed while the transcript is focused, move
+    /// focus to the input and type it there. Returns true if handled.
+    func routeTypingToInput(_ event: NSEvent) -> Bool {
+        guard isTranscriptFocused,
+              let chars = event.characters,
+              let scalar = chars.unicodeScalars.first else { return false }
+        let v = scalar.value
+        if v < 0x20 || v == 0x7F || (0xF700...0xF8FF).contains(v) { return false }
+        panel.makeFirstResponder(inputField)
+        (inputField.currentEditor() as? NSTextView)?
+            .insertText(chars, replacementRange: NSRange(location: NSNotFound, length: 0))
+        return true
+    }
+
+    // MARK: - NSTextViewDelegate (links)
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else { return false }
+        guard url.scheme == "servitor" else {
+            NSWorkspace.shared.open(url)
+            return true
+        }
+        switch url.host {
+        case "copy-code":
+            let parts = url.pathComponents.filter { $0 != "/" }
+            if parts.count == 2, let i = Int(parts[0]), let b = Int(parts[1]),
+               items.indices.contains(i), items[i].codeBlocks.indices.contains(b) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(items[i].codeBlocks[b], forType: .string)
+                toast("Code copied")
+            }
+        case "copy-answer": delegate?.chatPanel(self, didInvoke: .copyAnswer)
+        case "paste": delegate?.chatPanel(self, didInvoke: .pasteAnswer)
+        case "regenerate": delegate?.chatPanel(self, didInvoke: .regenerate)
+        default: break
+        }
+        return true
+    }
+
+    // MARK: - NSTextFieldDelegate
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if searchingTranscript && commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            runTranscriptSearch()
+            return true
+        }
+        if searchingTranscript && commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            searchingTranscript = false
+            inputField.stringValue = ""
+            restoreInputPlaceholder()
+            focusInput()
+            return true
+        }
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            let text = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return true }
+            inputField.stringValue = ""
+            delegate?.chatPanel(self, didSubmit: text)
+            return true
+        }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            delegate?.chatPanelDidRequestCancel(self)
+            return true
+        }
+        return false
+    }
+
+    // MARK: - Debug
+
+    /// Renders the panel to a PNG (no Screen Recording permission needed) and
+    /// logs the transcript's layout metrics. Triggered via a Darwin notification.
+    func dumpSnapshot(to path: String) {
+        guard let v = panel.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+        v.cacheDisplay(in: v.bounds, to: rep)
+        if let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+        let used = outputView.layoutManager.map { $0.usedRect(for: outputView.textContainer!) } ?? .zero
+        let links = countLinks()
+        Debug.log("dump: key=\(panel.isKeyWindow) appActive=\(NSApp.isActive) fr=\(panel.firstResponder.map { String(describing: type(of: $0)) } ?? "nil") input=\"\(inputField.stringValue.prefix(40))\" panel=\(NSStringFromSize(panel.frame.size)) clipW=\(scrollView.contentSize.width) containerW=\(outputView.textContainer?.size.width ?? -1) usedW=\(used.width) usedH=\(used.height) items=\(items.count) links=\(links)")
+    }
+
+    private func countLinks() -> Int {
+        guard let s = outputView.textStorage else { return 0 }
+        var n = 0
+        s.enumerateAttribute(.link, in: NSRange(location: 0, length: s.length)) { v, _, _ in if v != nil { n += 1 } }
+        return n
+    }
+}
+
+extension ChatPanel {
+    func windowDidBecomeKey(_ notification: Notification) {
+        // Borderless panels need explicit focus management so typing always
+        // lands in the input field.
+        focusInput()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        scheduleRebuild()
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        let size = panel.frame.size
+        UserDefaults.standard.set(Double(size.width), forKey: "panelWidth")
+        UserDefaults.standard.set(Double(size.height), forKey: "panelHeight")
+    }
+}
+
+/// A small brass shortcut chip beside a visible code/link target (⌃⇧n).
+/// Purely informational — it never swallows clicks or key events.
+private final class CodeBadge: NSView {
+    private let number: Int
+
+    init(number: Int) {
+        self.number = number
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("no") }
+
+    private var digit: String { number == 10 ? "0" : String(number) }
+    private var chord: String { "⌃⇧\(digit)" }
+
+    override var intrinsicContentSize: NSSize {
+        let s = NSAttributedString(string: chord, attributes: [
+            .font: ServitorTheme.legend(11),
+        ]).size()
+        return NSSize(width: ceil(s.width) + 8, height: max(18, ceil(s.height) + 4))
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }  // click-through
+
+    override func draw(_ dirtyRect: NSRect) {
+        ServitorTheme.brass.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4).fill()
+        let s = NSAttributedString(string: chord, attributes: [
+            .font: ServitorTheme.legend(11), .foregroundColor: ServitorTheme.mantle,
+        ])
+        let sz = s.size()
+        s.draw(at: NSPoint(x: (bounds.width - sz.width) / 2, y: (bounds.height - sz.height) / 2))
+    }
+}
