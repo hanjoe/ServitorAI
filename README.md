@@ -36,6 +36,14 @@ Then put your key in `~/.config/servitorai/config.json`:
 }
 ```
 
+Or, if you use [Proton Pass](https://proton.me/pass) with `pass-cli` installed and logged in, reference a vault item instead of a plaintext key:
+
+```json
+"env": { "OLLAMA_API_KEY": "pass://YourVault/YourItemTitle/password" }
+```
+
+ServitorAI resolves `pass://` references once at launch via `pass-cli`, and only the resolved value is passed to the pi child process — the key never touches config.json or disk. The first time it runs, macOS will show a keychain permission prompt; click **Always Allow**.
+
 Load the LaunchAgent if you want it auto-starting at login:
 
 ```bash

@@ -5,6 +5,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     private var statusItem: NSStatusItem!
     private var hotKey: GlobalHotKey?
     private var keyMonitor: Any?
+    private var mouseDownMonitor: Any?
+    private var mouseUpMonitor: Any?
     private let config = AppConfig.load()
     private var rpc: PiRpcClient!
     private var panel: ChatPanel!
@@ -18,6 +20,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     private var restartScheduled = false
     private var currentModelIndex = 0
     private var lastShownFailure: String?
+    /// Proton Pass resolution result — computed once at launch, reused by
+    /// every pi child restart so pass-cli is never invoked twice.
+    private var secretsEnv: [String: String] = [:]
+    private var secretsPassKeys: Set<String> = []
+    private var secretsFailed: [String] = []
 
     // MARK: - Bootstrap
 
@@ -29,11 +36,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         buildHotKey()
         buildKeyMonitor()
         resolveInitialModelIndex()
+        resolveSecrets()
         startRpc()
         warnIfKeyMissing()
         registerDebugHooks()
         NotificationCenter.default.addObserver(forName: Keymap.changed, object: nil, queue: .main) { [weak self] _ in
             self?.buildMainMenu()
+        }
+    }
+
+    private func resolveSecrets() {
+        guard let env = config.env, !env.isEmpty else { return }
+        let result = Secrets.resolve(env)
+        secretsEnv = result.values
+        secretsPassKeys = result.passKeys
+        secretsFailed = result.failed
+        if !secretsFailed.isEmpty {
+            panel.showNotice("⚠ Proton Pass: couldn't resolve \(secretsFailed.joined(separator: ", ")) — run `pass-cli login` or fix the pass:// reference in config.json.")
         }
     }
 
@@ -148,14 +167,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     private func warnIfKeyMissing() {
         guard config.provider == "ollama-cloud" else { return }
         let fromEnv = ProcessInfo.processInfo.environment["OLLAMA_API_KEY"]
-        let effective = fromEnv ?? config.env?["OLLAMA_API_KEY"]
+        let fromPass = secretsPassKeys.contains("OLLAMA_API_KEY") ? secretsEnv["OLLAMA_API_KEY"] : nil
+        let effective = fromEnv ?? fromPass ?? (secretsFailed.contains("OLLAMA_API_KEY") ? nil : secretsEnv["OLLAMA_API_KEY"])
         if effective == nil || effective == "PASTE_YOUR_KEY_HERE" {
-            panel.showNotice("⚠ OLLAMA_API_KEY is missing or still the placeholder — DeepSeek will fail. Paste your key into ~/.config/servitorai/config.json, or press ⌘M and pick Claude Haiku (no key needed).")
+            panel.showNotice("⚠ OLLAMA_API_KEY is missing — set it in ~/.config/servitorai/config.json, either directly or as a pass:// vault/item/field reference, or press ⌘M and pick Claude Haiku (no key needed).")
         }
     }
 
     private func startRpc() {
-        rpc = PiRpcClient(config: config)
+        rpc = PiRpcClient(config: config, resolvedEnv: secretsEnv, passKeys: secretsPassKeys)
         rpc.delegate = self
         rpc.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -200,6 +220,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     private func buildKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleKeyDown(event) ?? event
+        }
+        mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.panel.noteTranscriptMouseDown(event)
+            return event
+        }
+        mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            // NSTextView updates selection after this monitor; inspect it on the
+            // next main-loop turn, once AppKit has completed mouse selection.
+            DispatchQueue.main.async { [weak self] in
+                self?.panel.finishTranscriptMouseSelection()
+            }
+            return event
         }
     }
 

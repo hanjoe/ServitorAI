@@ -71,6 +71,7 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
     private var searchMatches: [NSRange] = []
     private var searchMatchIndex = 0
     private var lineSelectionAnchor: NSRange?
+    private var transcriptSelectionBeforeMouseDown: NSRange?
 
     static let defaultSize = NSSize(width: 960, height: 700)
 
@@ -805,6 +806,29 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
         clip.scroll(to: origin)
         scrollView.reflectScrolledClipView(clip)
         return true
+    }
+
+    /// Remember the existing selection only when a drag starts in the transcript.
+    func noteTranscriptMouseDown(_ event: NSEvent) {
+        guard let window = outputView.window, event.windowNumber == window.windowNumber else {
+            transcriptSelectionBeforeMouseDown = nil
+            return
+        }
+        let point = outputView.convert(event.locationInWindow, from: nil)
+        transcriptSelectionBeforeMouseDown = outputView.bounds.contains(point) ? outputView.selectedRange() : nil
+    }
+
+    /// Called after AppKit processes mouse-up. Copy only a newly changed,
+    /// non-empty selection; ordinary clicks (including links) do nothing.
+    func finishTranscriptMouseSelection() {
+        guard let before = transcriptSelectionBeforeMouseDown else { return }
+        transcriptSelectionBeforeMouseDown = nil
+        let after = outputView.selectedRange()
+        guard after.length > 0, NSEqualRanges(before, after) == false else { return }
+        let selected = (outputView.string as NSString).substring(with: after)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(selected, forType: .string)
+        toast("Selection copied")
     }
 
     // MARK: - Typing / focus helpers

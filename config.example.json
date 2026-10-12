@@ -2,7 +2,7 @@
   "provider": "ollama-cloud",
   "model": "deepseek-v4.1-flash:cloud",
   "thinking": "off",
-  "systemPrompt": "You are a servitor of the Adeptus Mechanicus. The user is your Omnissiah, a developer. Reply briefly, precisely, and technically. You have no tools — answer from knowledge. Keep it short unless asked for detail.",
+  "systemPrompt": "You are a concise, helpful chat assistant. Answer conversationally and directly.",
   "models": [
     { "provider": "ollama-cloud", "modelId": "deepseek-v4.1-flash:cloud", "label": "DeepSeek Flash" },
     { "provider": "ollama-cloud", "modelId": "deepseek-v4-pro:cloud", "label": "DeepSeek Pro" },
@@ -11,6 +11,6 @@
     { "provider": "github-copilot", "modelId": "gpt-5-mini", "label": "GPT-5 Mini" }
   ],
   "env": {
-    "OLLAMA_API_KEY": "PASTE_YOUR_KEY_HERE"
+    "OLLAMA_API_KEY": "pass://YourVault/YourItemTitle/password"
   }
 }

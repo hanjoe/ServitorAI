@@ -29,9 +29,15 @@ final class PiRpcClient {
     private(set) var sessionName: String?
 
     private let config: AppConfig
+    /// Env values resolved at startup (pass:// references already replaced).
+    private let resolvedEnv: [String: String]?
+    /// Keys whose values came from Proton Pass — they override inherited env.
+    private let passKeys: Set<String>
 
-    init(config: AppConfig) {
+    init(config: AppConfig, resolvedEnv: [String: String]? = nil, passKeys: Set<String> = []) {
         self.config = config
+        self.resolvedEnv = resolvedEnv ?? config.env
+        self.passKeys = passKeys
     }
 
     // MARK: - Process lifecycle
@@ -61,6 +67,7 @@ final class PiRpcClient {
         if hasDDGR { arguments += ["--extension", ddgrExtension.path] }
         if hasList, let listExtension { arguments += ["--extension", listExtension.path] }
         process.arguments = arguments
+        Debug.log("pi spawn: tools=\(availableTools) ddgr=\(hasDDGR) list=\(hasList)")
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         var env = ProcessInfo.processInfo.environment
         // Don't let an enclosing pi session (e.g. when launched from a pi shell)
@@ -70,9 +77,17 @@ final class PiRpcClient {
             env.removeValue(forKey: key)
         }
         env["PI_SKIP_VERSION_CHECK"] = "1"
-        if let extra = config.env {
-            for (k, v) in extra where env[k] == nil {
-                env[k] = v
+        if let extra = resolvedEnv {
+            for (k, v) in extra {
+                if passKeys.contains(k) {
+                    env[k] = v          // explicit Pass reference always wins
+                    continue
+                }
+                if v.hasPrefix("pass://") {
+                    env.removeValue(forKey: k)  // unresolved URI — never leak it
+                    continue
+                }
+                if env[k] == nil { env[k] = v }
             }
         }
         process.environment = env
@@ -143,6 +158,28 @@ final class PiRpcClient {
         let type = obj["type"] as? String
         // message_update fires per token; logging it would flood the trace.
         if type != "message_update" { Debug.log("event: \(type ?? "<no type>")") }
+        if type == "tool_execution_start", let name = obj["toolName"] as? String {
+            Debug.log("tool: \(name) args=\(String(describing: obj["args"]).prefix(120))")
+        }
+        if type == "tool_execution_end", let name = obj["toolName"] as? String {
+            if let result = obj["result"] as? [String: Any],
+               let content = result["content"] as? [[String: Any]],
+               let text = content.first?["text"] as? String {
+                // Only web_search results are safe to preview; read/list_files
+                // output could contain local file content (incl. secrets).
+                if name == "web_search" {
+                    Debug.log("tool result: \(name) → \(text.prefix(150))")
+                } else {
+                    Debug.log("tool result: \(name) → (\(text.count) chars)")
+                }
+            } else if let result = obj["result"] as? [String: Any],
+                      let details = result["details"] as? [String: Any],
+                      let error = details["error"] as? String {
+                Debug.log("tool error: \(name) → \(error.prefix(150))")
+            } else {
+                Debug.log("tool result: \(name) → (unparsed)")
+            }
+        }
 
         switch type {
         case "response":
