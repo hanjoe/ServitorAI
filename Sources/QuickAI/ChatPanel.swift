@@ -532,11 +532,15 @@ final class ChatPanel: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSWind
     private func actionsRow() -> NSAttributedString {
         let style = Markdown.para(spacingBefore: 2, spacingAfter: 4)
         let row = NSMutableAttributedString()
-        for (i, (title, target)) in [("[ COPY ]", "copy-answer"), ("[ PASTE ]", "paste"), ("[ RETRY ]", "regenerate")].enumerated() {
-            if i > 0 { row.append(NSAttributedString(string: "  ", attributes: [.font: T.pixel(8)])) }
-            row.append(NSAttributedString(string: title, attributes: [
-                .font: T.pixel(8), .link: URL(string: "servitor://\(target)") as Any,
+        // Each button shows the key that triggers it.
+        for (i, (title, key, target)) in [("COPY", "⌘⇧C", "copy-answer"), ("RETRY", "⌘R", "regenerate")].enumerated() {
+            if i > 0 { row.append(NSAttributedString(string: "    ", attributes: [.font: T.pixel(8)])) }
+            let start = row.length
+            row.append(NSAttributedString(string: "[ \(title) \(key) ]", attributes: [
+                .font: T.pixel(8),
             ]))
+            row.addAttribute(.link, value: URL(string: "servitor://\(target)") as Any,
+                             range: NSRange(location: start, length: row.length - start))
         }
         row.append(NSAttributedString(string: "\n"))
         row.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: row.length))
