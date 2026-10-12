@@ -2,7 +2,8 @@
 
 A Warhammer × Catppuccin themed macOS menu-bar AI chat app. Fast, keyboard-first, and backed by a warm `pi --mode rpc` process.
 
-![ServitorAI screenshot](docs/screenshot.png)
+<img width="962" height="693" alt="image" src="https://github.com/user-attachments/assets/4ebcdae5-18f6-4957-9a66-18106535bb85" />
+
 
 ## What it is
 
