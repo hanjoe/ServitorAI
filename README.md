@@ -25,7 +25,7 @@ cd ServitorAI
 ./install.sh
 ```
 
-ServitorAI shares pi's existing model configuration and sign-in. In a terminal, start `pi` and run `/login` to sign in to a supported provider (for example, GitHub Copilot). Then launch ServitorAI. On first setup, ServitorAI looks for installed pi extensions that advertise a web-search tool and asks before loading one. Review the extension code and trust its source before enabling it; you can leave search off and change the choice later with **Configure Web Search…**. It asks pi which models are currently usable, puts configured favourites first, and falls back to a signed-in model if its configured default is unavailable. If no models are available, sign in or configure a provider in pi, then relaunch ServitorAI.
+ServitorAI shares pi's existing model configuration and sign-in. In a terminal, start `pi` and run `/login` to sign in to a supported provider (for example, GitHub Copilot). Then launch ServitorAI. On first setup, ServitorAI looks for installed pi extensions **and pi npm packages** (e.g. `pi install npm:pi-web-access`) that advertise a web-search tool and asks before loading one. Review the extension code and trust its source before enabling it; you can leave search off and change the choice later with **Configure Web Search…**. It asks pi which models are currently usable, puts configured favourites first, and falls back to a signed-in model if its configured default is unavailable. If no models are available, sign in or configure a provider in pi, then relaunch ServitorAI.
 
 Credentials stay in pi's own auth/configuration, such as `~/.pi/agent/auth.json`; ServitorAI does not copy OAuth tokens or implement a separate login flow. Keep pi's auth files private and never commit them.
 

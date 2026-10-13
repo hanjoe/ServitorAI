@@ -94,7 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
            SearchExtensionCandidate.fingerprintOfFile(at: savedPath) == savedFingerprint {
             approvedSearchExtension = SearchExtensionCandidate(path: savedPath, toolName: savedTool,
                                                                description: "Previously approved pi web-search extension.",
-                                                               fingerprint: savedFingerprint)
+                                                               fingerprint: savedFingerprint,
+                                                               packageName: nil)
             completion()
             return
         }
