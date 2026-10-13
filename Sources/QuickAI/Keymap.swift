@@ -1,7 +1,9 @@
 import AppKit
+import Carbon
 
 /// Every rebindable in-app action. Esc (cancel) and Enter (submit) are fixed.
 enum AppAction: String, CaseIterable {
+    case togglePanel
     case actionsMenu, settings
     case copyAnswer, copyCode, pasteAnswer
     case regenerate, regenerateNextModel
@@ -61,6 +63,7 @@ final class Keymap {
     }
 
     static let defaults: [AppAction: KeyBinding] = [
+        .togglePanel: KeyBinding(key: "a", modifiers: NSEvent.ModifierFlags(arrayLiteral: [.command, .shift]).rawValue),
         .actionsMenu: ctrl("k"),
         .settings: KeyBinding(key: ",", modifiers: NSEvent.ModifierFlags.command.rawValue),
         .copyAnswer: ctrl("c"),
@@ -103,6 +106,43 @@ final class Keymap {
         if mods.contains(.shift) { s += "⇧" }
         if mods.contains(.command) { s += "⌘" }
         return s + prettyKeyGlyph(b.key)
+    }
+
+    // MARK: - Conversion helpers (config → Carbon global hotkey)
+
+    /// NSEvent.ModifierFlags → Carbon modifier constants used by
+    /// RegisterEventHotKey (cmdKey/shiftKey/optionKey/controlKey).
+    static func carbonModifiers(_ raw: UInt) -> UInt32 {
+        let flags = NSEvent.ModifierFlags(rawValue: raw)
+        var out: UInt32 = 0
+        if flags.contains(.command) { out |= UInt32(cmdKey) }
+        if flags.contains(.shift) { out |= UInt32(shiftKey) }
+        if flags.contains(.option) { out |= UInt32(optionKey) }
+        if flags.contains(.control) { out |= UInt32(controlKey) }
+        return out
+    }
+
+    /// Character → macOS virtual key code for the global hotkey. Covers the
+    /// keys people actually bind (letters, digits, and a few punctuation
+    /// keys); anything else returns nil and the binding is skipped.
+    static func virtualKeyCode(for key: String) -> UInt32? {
+        let lower = key.lowercased()
+        let letters: [String: UInt32] = [
+            "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
+            "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "i": 34,
+            "o": 31, "u": 32, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46,
+        ]
+        if let code = letters[lower] { return code }
+        let digits: [String: UInt32] = [
+            "1": 18, "2": 19, "3": 20, "4": 21, "5": 23,
+            "6": 22, "7": 26, "8": 28, "9": 25, "0": 29,
+        ]
+        if let code = digits[lower] { return code }
+        let punctuation: [String: UInt32] = [
+            ",": 43, ".": 47, "/": 44, ";": 41, "'": 39, "[": 33, "]": 30, "\\": 42,
+            "-": 27, "=": 24, "`": 50, " ": 49,
+        ]
+        return punctuation[key] ?? punctuation[lower]
     }
 
     // MARK: - Reload
@@ -220,9 +260,10 @@ final class Keymap {
         # Fixed, not configurable here:
         #   Esc              cancel current answer / hide the panel
         #   Enter            submit
-        #   ⌘⇧A              toggle the panel (global — works from any app)
         #   ⌘C / ⌘V / ⌘A     native copy / paste / select-all while editing
         # ---------------------------------------------------------------
+
+        \(line(.togglePanel, "Toggle the panel (global — works from any app)"))
 
         \(line(.actionsMenu, "Open the actions menu (every command, with its key)"))
         \(line(.settings, "Open this config file in your editor"))

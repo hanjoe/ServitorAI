@@ -57,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         registerDebugHooks()
         NotificationCenter.default.addObserver(forName: Keymap.changed, object: nil, queue: .main) { [weak self] _ in
             self?.buildMainMenu()
+            self?.buildHotKey()
+            self?.statusItem.menu = self?.makeStatusMenu()
         }
     }
 
@@ -313,11 +315,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         panel.onHistoryMenu = { [weak self] in self?.recentSessionsMenu() ?? NSMenu() }
     }
 
+    /// The global toggle binding lives in keybinds.conf like every other
+    /// shortcut (default ⌘⇧A); when it's rebuildable it's re-registered on
+    /// keymap changes, and "unset" disables the global hotkey entirely.
     private func buildHotKey() {
-        hotKey = GlobalHotKey(keyCode: 0, modifiers: UInt32(cmdKey | shiftKey)) { [weak self] in
+        hotKey = nil
+        guard let b = Keymap.shared.binding(for: .togglePanel) else { return }
+        guard let keyCode = Keymap.virtualKeyCode(for: b.key) else {
+            NSLog("ServitorAI: no virtual key code for global hotkey '\(b.key)' — toggle hotkey not registered")
+            return
+        }
+        hotKey = GlobalHotKey(keyCode: keyCode, modifiers: Keymap.carbonModifiers(b.modifiers)) { [weak self] in
             self?.togglePanel()
         }
-        if hotKey == nil { NSLog("ServitorAI: failed to register ⌘⇧A hotkey") }
+        if hotKey == nil { NSLog("ServitorAI: failed to register toggle hotkey (Keymap: \(Keymap.shared.display(for: .togglePanel)))") }
     }
 
     // MARK: - Keyboard shortcuts (active while the panel has focus)
@@ -359,8 +370,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
     private func makeStatusMenu() -> NSMenu {
         let menu = NSMenu()
 
-        let open = NSMenuItem(title: "Open ServitorAI", action: #selector(togglePanel), keyEquivalent: "A")
-        open.keyEquivalentModifierMask = [.command, .shift]
+        let open = NSMenuItem(title: "Open ServitorAI", action: #selector(togglePanel), keyEquivalent: "")
+        if let b = Keymap.shared.binding(for: .togglePanel) {
+            open.keyEquivalent = b.key
+            open.keyEquivalentModifierMask = NSEvent.ModifierFlags(rawValue: b.modifiers)
+        }
         open.target = self
         menu.addItem(open)
 
@@ -463,6 +477,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, PiRpcClientDelegate, C
         menu.addItem(recent)
 
         menu.addItem(.separator())
+        add("Toggle Panel", #selector(togglePanel), .togglePanel)
         add("Focus Input", #selector(actFocusInput), .focusInput)
         add("Settings…", #selector(actSettings), .settings)
         let reload = NSMenuItem(title: "Reload Keybinds", action: #selector(actReloadKeybinds), keyEquivalent: "")
